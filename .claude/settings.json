@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv sync:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run ruff:*)",
+      "Bash(uv run mypy:*)",
+      "Bash(uv run tomd:*)",
+      "Bash(uv run python scripts/eval_corpus.py:*)",
+      "Bash(scripts/check.sh)",
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ],
+    "ask": [
+      "Bash(uv add:*)",
+      "Bash(uv remove:*)",
+      "Bash(uv run python scripts/eval_corpus.py --update-baseline:*)",
+      "Edit(tests/corpus/**/expected.md)",
+      "Write(tests/corpus/**/expected.md)",
+      "Edit(DECISIONS.md)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
+    ],
+    "deny": [
+      "Read(~/tomd-private-corpus/**)",
+      "Bash(rm -rf:*)"
+    ]
+  }
+}

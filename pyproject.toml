@@ -1,0 +1,45 @@
+[project]
+name = "tomd"
+version = "0.0.0"
+description = "Local converter from PDF, EPUB and Wikipedia articles to deterministic Markdown."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[project.scripts]
+tomd = "tomd.cli:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.169.4",
+    "markdown-it-py>=4.2.0",
+    "mdit-py-plugins>=0.6.1",
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "pyyaml>=6.0.3",
+    "ruff>=0.6",
+    "types-pyyaml>=6.0.12.20260906",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.12"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PTH"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers"]
+markers = [
+    "slow: OCR or heavy backends; excluded with -m \"not slow\"",
+]
