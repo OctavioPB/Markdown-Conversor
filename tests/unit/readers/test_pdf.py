@@ -353,6 +353,23 @@ def test_running_heads_repeated_on_three_pages_are_removed(tmp_path: Path) -> No
     assert "pdf.furniture_removed" in _codes(doc)
 
 
+def test_running_head_that_drifts_a_little_is_still_removed(tmp_path: Path) -> None:
+    """Scans place the head a few points higher or lower on each page: distances to the
+    edge are compared with a tolerance, not rounded into buckets that could split them."""
+
+    def draw(c: Canvas) -> None:
+        for page, drift in enumerate((0, 6, 9), start=1):
+            c.setFont("Helvetica", 8)
+            c.drawString(LEFT, A4[1] - 27 - drift, "Journal of Tests, vol. 1")
+            c.setFont("Helvetica", 11)
+            c.drawString(LEFT, TOP - 40, f"Body text of page {page}, long enough to be body.")
+            c.showPage()
+
+    doc = convert(make_pdf(tmp_path, draw))
+    expected = [f"Body text of page {n}, long enough to be body." for n in (1, 2, 3)]
+    assert _paragraph_texts(doc) == expected
+
+
 def test_header_on_only_two_pages_is_kept(tmp_path: Path) -> None:
     def draw(c: Canvas) -> None:
         for page in range(1, 3):

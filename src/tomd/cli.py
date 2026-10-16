@@ -26,6 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("-o", "--out", type=Path, default=Path("out"), help="output folder")
     convert.add_argument("--revision", type=int, help="Wikipedia revision id to convert")
     convert.add_argument("--backend", default="heuristic", help="PDF backend (ADR-005)")
+    convert.add_argument(
+        "--ocr",
+        default="auto",
+        choices=["auto", "always", "never"],
+        help="OCR scanned PDF pages (ADR-017): auto = only pages without usable text",
+    )
 
     debug = sub.add_parser("debug-pdf", help="SVG overlay of one PDF page at one layout stage")
     debug.add_argument("source", type=Path)
@@ -43,18 +49,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "convert":
-        return _convert(args.source, args.out, args.revision, args.backend)
+        return _convert(args.source, args.out, args.revision, args.backend, args.ocr)
     if args.command == "debug-pdf":
         return _debug_pdf(args.source, args.page, args.stage, args.out)
     parser.print_help()
     return EXIT_OK
 
 
-def _convert(source: str, out: Path, revision: int | None, backend: str) -> int:
+def _convert(source: str, out: Path, revision: int | None, backend: str, ocr: str) -> int:
     from tomd.pipeline.dispatch import convert
+    from tomd.readers.pdf.ocr import OcrMode
 
     try:
-        result = convert(source, out, revision=revision, pdf_backend=backend)
+        result = convert(source, out, revision=revision, pdf_backend=backend, ocr=OcrMode(ocr))
     except TomdError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_FAILED

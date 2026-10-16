@@ -12,15 +12,22 @@ Existing expected.md files without the DRAFT marker (already reviewed) are never
 
 import argparse
 import io
+import random
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from reportlab.lib.pagesizes import A4
+import pypdfium2 as pdfium
+from PIL import Image as PILImage
+from PIL import ImageChops, ImageFilter
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import (
     BaseDocTemplate,
@@ -29,10 +36,13 @@ from reportlab.platypus import (
     ListFlowable,
     ListItem,
     NextPageTemplate,
+    PageBreak,
     PageTemplate,
     Paragraph,
     Preformatted,
     SimpleDocTemplate,
+    Table,
+    TableStyle,
 )
 from reportlab.platypus.flowables import Flowable
 
@@ -48,6 +58,13 @@ H3 = ParagraphStyle(
 )
 BODY = ParagraphStyle("body", fontName="Helvetica", fontSize=10.5, leading=14, spaceAfter=8)
 CODE = ParagraphStyle("code", fontName="Courier", fontSize=9, leading=11, spaceAfter=8)
+SANS = {"title": TITLE, "h2": H2, "h3": H3, "body": BODY}
+SERIF = {
+    "title": ParagraphStyle("s-title", parent=TITLE, fontName="Times-Bold"),
+    "h2": ParagraphStyle("s-h2", parent=H2, fontName="Times-Bold"),
+    "h3": ParagraphStyle("s-h3", parent=H3, fontName="Times-Bold"),
+    "body": ParagraphStyle("s-body", parent=BODY, fontName="Times-Roman", fontSize=11),
+}
 
 
 # --- Content model (rendered both to PDF and to Markdown) ------------------------------
@@ -76,7 +93,18 @@ class C:
     code: str
 
 
-type Node = H | P | L | C
+@dataclass(frozen=True)
+class T:
+    header: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]
+
+
+@dataclass(frozen=True)
+class Break:
+    """Page break in the PDF; nothing in the Markdown."""
+
+
+type Node = H | P | L | C | T | Break
 
 
 def _md_inline(markup: str) -> str:
@@ -97,6 +125,9 @@ def to_markdown(nodes: list[Node]) -> str:
                 out.append("\n".join(_md_list(node, 0)))
             case C(code):
                 out.append("```\n" + code + "\n```")
+            case T(header, rows):
+                table = [header, tuple("---" for _ in header), *rows]
+                out.append("\n".join("| " + " | ".join(row) + " |" for row in table))
     return "\n\n".join(out) + "\n"
 
 
@@ -114,28 +145,44 @@ def _md_list(lst: L, depth: int) -> list[str]:
     return lines
 
 
-def _flowables(nodes: list[Node]) -> list[Flowable]:
+def _flowables(nodes: list[Node], styles: dict[str, ParagraphStyle] = SANS) -> list[Flowable]:
     out: list[Flowable] = []
     for node in nodes:
         match node:
             case H(level, text):
-                out.append(Paragraph(text, {1: TITLE, 2: H2}.get(level, H3)))
+                out.append(Paragraph(text, styles[{1: "title", 2: "h2"}.get(level, "h3")]))
             case P(markup):
-                out.append(Paragraph(markup, BODY))
+                out.append(Paragraph(markup, styles["body"]))
             case L():
-                out.append(_list_flowable(node))
+                out.append(_list_flowable(node, styles))
             case C(code):
                 out.append(Preformatted(code, CODE))
+            case T(header, rows):
+                grid = Table([list(header), *map(list, rows)], hAlign="LEFT")
+                grid.setStyle(
+                    TableStyle(
+                        [
+                            ("GRID", (0, 0), (-1, -1), 0.8, colors.black),
+                            ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+                            ("FONTSIZE", (0, 0), (-1, -1), 10.5),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                        ]
+                    )
+                )
+                out.append(grid)
+            case Break():
+                out.append(PageBreak())
     return out
 
 
-def _list_flowable(lst: L) -> ListFlowable:
+def _list_flowable(lst: L, styles: dict[str, ParagraphStyle] = SANS) -> ListFlowable:
     entries: list[list[Flowable]] = []
     for item in lst.items:
         if isinstance(item, L):
-            entries[-1].append(_list_flowable(item))  # nested list under the previous item
+            entries[-1].append(_list_flowable(item, styles))  # nested under the previous item
         else:
-            entries.append([Paragraph(item, BODY)])
+            entries.append([Paragraph(item, styles["body"])])
     # The reportlab stubs do not model ListItem as a nestable flowable.
     items: list[Any] = [ListItem(flowables) for flowables in entries]
     if lst.ordered:
@@ -150,7 +197,7 @@ def _page_number(canvas: Canvas, doc: SimpleDocTemplate) -> None:
     canvas.drawCentredString(A4[0] / 2, 1.2 * cm, str(doc.page))
 
 
-def build_flow_pdf(nodes: list[Node]) -> bytes:
+def build_flow_pdf(nodes: list[Node], styles: dict[str, ParagraphStyle] = SANS) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -161,7 +208,7 @@ def build_flow_pdf(nodes: list[Node]) -> bytes:
         author="",
         invariant=1,
     )
-    doc.build(_flowables(nodes), onFirstPage=_page_number, onLaterPages=_page_number)
+    doc.build(_flowables(nodes, styles), onFirstPage=_page_number, onLaterPages=_page_number)
     return buffer.getvalue()
 
 
@@ -310,6 +357,286 @@ def case_two_columns() -> tuple[list[Node], bytes]:
     return nodes, buffer.getvalue()
 
 
+# --- Scanned pages (phase 6, ADR-017) -----------------------------------------------------
+# A digital page rendered to a bitmap, degraded like a real scan, and wrapped in an
+# image-only PDF. Text is plain (OCR does not recover bold or italic).
+
+
+@dataclass(frozen=True)
+class Scan:
+    dpi: int = 300
+    noise: float = 0.0  # share of pixels flipped to black or white (salt and pepper)
+    skew: float = 0.0  # degrees, counter-clockwise
+    jpeg_quality: int | None = None  # None = lossless
+    blur: float = 0.0  # Gaussian radius in pixels (out-of-focus scanner, photocopy)
+    background: int = 0  # darkening across the page, 0-255 (uneven lighting, old paper)
+    shadow: int = 0  # darkening at the left edge, 0-255 (book gutter)
+    contrast: tuple[int, int] = (0, 255)  # grey levels of ink and paper (faded print)
+    quarter_turns: int = 0  # page fed sideways: 1 = 90° counter-clockwise
+    pages: tuple[int, ...] | None = None  # 1-based pages to scan; the rest stay digital
+    bilevel: bool = False  # black and white at a fixed threshold (office document scanners)
+
+
+PHOTOCOPY = Scan(
+    dpi=200, skew=1.5, noise=0.002, blur=0.8, background=40, shadow=140, jpeg_quality=70
+)
+
+
+def _degrade(image: PILImage.Image, scan: Scan, rng: random.Random) -> PILImage.Image:
+    if scan.skew:
+        image = image.rotate(scan.skew, resample=PILImage.Resampling.BILINEAR, fillcolor=255)
+    if scan.noise:
+        pixels = image.load()
+        assert pixels is not None
+        width, height = image.size
+        for _ in range(int(width * height * scan.noise)):
+            pixels[rng.randrange(width), rng.randrange(height)] = rng.choice((0, 255))
+    if scan.blur:
+        image = image.filter(ImageFilter.GaussianBlur(scan.blur))
+    if scan.contrast != (0, 255):
+        ink, paper = scan.contrast
+        image = image.point(lambda v: ink + v * (paper - ink) // 255)
+    if scan.background or scan.shadow:
+        width, height = image.size
+        band = width // 12
+        row = [
+            255
+            - scan.background * x // width
+            - (scan.shadow * (band - x) // band if x < band else 0)
+            for x in range(width)
+        ]
+        light = PILImage.new("L", (width, 1))
+        light.putdata(row)
+        image = ImageChops.multiply(image, light.resize((width, height)))
+    if scan.quarter_turns:
+        image = image.rotate(90 * scan.quarter_turns, expand=True)
+    if scan.bilevel:
+        image = image.point(lambda v: 0 if v < 160 else 255).convert("1")
+    return image
+
+
+def scan_pdf(digital: bytes, scan: Scan, seed: int) -> bytes:
+    rng = random.Random(seed)
+    src = pdfium.PdfDocument(digital)
+    buffer = io.BytesIO()
+    canvas = Canvas(buffer, pagesize=A4, invariant=1)
+    for index in range(len(src)):
+        page = src[index]
+        image = page.render(scale=scan.dpi / 72, grayscale=True).to_pil().convert("L")
+        page.close()
+        image = _degrade(image, scan, rng)
+        data = io.BytesIO()
+        if scan.jpeg_quality is None:
+            image.save(data, format="PNG", optimize=True)
+        else:
+            image.save(data, format="JPEG", quality=scan.jpeg_quality)
+        size = landscape(A4) if scan.quarter_turns % 2 else A4
+        canvas.setPageSize(size)
+        canvas.drawImage(ImageReader(io.BytesIO(data.getvalue())), 0, 0, *size)
+        canvas.showPage()
+    src.close()
+    canvas.save()
+    if scan.pages is None:
+        return buffer.getvalue()
+    return _mix_pages(digital, buffer.getvalue(), scan.pages)
+
+
+def _mix_pages(digital: bytes, scanned: bytes, pages: tuple[int, ...]) -> bytes:
+    """The digital document with the given pages replaced by their scans."""
+    src, scans = pdfium.PdfDocument(digital), pdfium.PdfDocument(scanned)
+    out = pdfium.PdfDocument.new()
+    for index in range(len(src)):
+        out.import_pages(scans if index + 1 in pages else src, [index])
+    buffer = io.BytesIO()
+    out.save(buffer)
+    for doc in (out, scans, src):
+        doc.close()
+    # PDFium stamps the current time and a random /ID; pin both (same lengths, so the
+    # xref offsets stay valid) to keep the file byte-for-byte reproducible.
+    data = re.sub(rb"D:\d{14}", b"D:20000101000000", buffer.getvalue())
+    return re.sub(
+        rb"/ID\[<[0-9A-F]{32}><[0-9A-F]{32}>\]",
+        b"/ID[<" + b"0" * 32 + b"><" + b"0" * 32 + b">]",
+        data,
+    )
+
+
+def _scan_nodes(lang: str) -> list[Node]:
+    if lang == "es":
+        return [
+            H(1, "Informe escaneado de prueba"),
+            P(LOREM_ES),
+            H(2, "1 Antecedentes"),
+            P(LOREM_ES),
+            L(("Primer punto de la lista", "Segundo punto de la lista", "Tercer punto")),
+            H(2, "2 Conclusiones"),
+            P(LOREM_ES),
+        ]
+    return [
+        H(1, "Scanned test report"),
+        P(LOREM_EN),
+        H(2, "1 Background"),
+        P(LOREM_EN),
+        L(("First point of the list", "Second point of the list", "Third point")),
+        H(2, "2 Conclusions"),
+        P(LOREM_EN),
+    ]
+
+
+def scan_case(lang: str, scan: Scan, seed: int) -> Callable[[], tuple[list[Node], bytes]]:
+    return scan_of(lambda: _scan_nodes(lang), scan, seed)
+
+
+def scan_of(
+    content: Callable[[], list[Node]],
+    scan: Scan,
+    seed: int,
+    styles: dict[str, ParagraphStyle] = SANS,
+) -> Callable[[], tuple[list[Node], bytes]]:
+    def build() -> tuple[list[Node], bytes]:
+        nodes = content()
+        return nodes, scan_pdf(build_flow_pdf(nodes, styles), scan, seed)
+
+    return build
+
+
+def scan_two_columns() -> tuple[list[Node], bytes]:
+    nodes, digital = case_two_columns()
+    return nodes, scan_pdf(digital, Scan(dpi=200, skew=-0.5, noise=0.0002, bilevel=True), 6)
+
+
+def _survey() -> list[Node]:
+    return [
+        H(1, "Field survey notes"),
+        P(
+            "The survey team visited eleven sites along the northern ridge during the spring "
+            "season. Each site was photographed, measured and described in a short report "
+            "written on the same day."
+        ),
+        H(2, "1 Method"),
+        P(
+            "Measurements were taken with a calibrated tape and a handheld level. Where the "
+            "ground was uneven, the team repeated every reading twice and kept the average."
+        ),
+        L(
+            (
+                "Mark the corners of the plot",
+                "Record the slope and the soil type",
+                "Photograph the plot from the south",
+            ),
+            ordered=True,
+        ),
+        H(2, "2 Findings"),
+        P(
+            "Most plots showed moderate erosion on the western side. Two sites near the river "
+            "had been flooded recently and were excluded from the final count."
+        ),
+    ]
+
+
+_ES_SENTENCES = (
+    "La biblioteca amplió su horario durante los meses de exámenes.",
+    "¿Cuántos lectores usan la sala de consulta cada día?",
+    "Según el registro, la media superó los doscientos visitantes.",
+    "¡El fondo de cartografía antigua se digitalizó por completo!",
+    "Los niños del barrio participaron en el taller de encuadernación.",
+    "El año próximo se prevé renovar la señalización y el mobiliario.",
+)
+
+
+def _library_report() -> list[Node]:
+    def paragraph(k: int) -> P:
+        picked = [_ES_SENTENCES[(k + i) % len(_ES_SENTENCES)] for i in range(5)]
+        return P(f"Párrafo {k}. " + " ".join(picked))
+
+    nodes: list[Node] = [H(1, "Memoria anual de la biblioteca"), H(2, "1 Introducción")]
+    nodes += [paragraph(k) for k in range(1, 5)]
+    nodes += [H(3, "1.1 Fondos antiguos"), *(paragraph(k) for k in range(5, 9))]
+    nodes += [H(2, "2 Servicios y señalización"), *(paragraph(k) for k in range(9, 13))]
+    nodes.append(P(" ".join(paragraph(k).markup for k in range(13, 17))))  # crosses a page
+    nodes += [H(3, "2.1 Año próximo"), paragraph(17)]
+    return nodes
+
+
+def _inventory() -> list[Node]:
+    return [
+        H(1, "Inventory of spare parts"),
+        P(
+            "This page was fed into the scanner sideways, as often happens with loose sheets "
+            "in a batch. The converter must detect the orientation before reading it."
+        ),
+        H(2, "1 Storage"),
+        P(
+            "Parts are stored by size in the north warehouse. Small items such as bolts and "
+            "washers are kept in labelled drawers near the entrance."
+        ),
+        L(("Bolts and washers", "Belts and pulleys", "Filters and seals")),
+    ]
+
+
+def _minutes() -> list[Node]:
+    return [
+        H(1, "Acta de la reunión de vecinos"),
+        P(
+            "La reunión comenzó a las siete de la tarde en el salón del portal, con la "
+            "asistencia de catorce propietarios y la administradora de la finca."
+        ),
+        H(2, "1 Orden del día"),
+        L(("Reparación de la cubierta", "Cambio del ascensor", "Ruegos y preguntas")),
+        H(2, "2 Acuerdos"),
+        P(
+            "Se aprobó por mayoría pedir tres presupuestos para la cubierta. La decisión sobre "
+            "el ascensor se aplaza hasta la próxima junta, prevista para el mes de octubre."
+        ),
+    ]
+
+
+def _mixed() -> list[Node]:
+    def page(title: str, body: str, second: str) -> list[Node]:
+        return [H(2, title), P(body), P(second)]
+
+    nodes: list[Node] = [H(1, "Expediente con una página escaneada")]
+    nodes += page(
+        "1 Solicitud",
+        "La primera página es digital: su texto se extrae directamente del archivo y no "
+        "debe pasar por el reconocimiento óptico de caracteres.",
+        "El solicitante adjunta un documento firmado a mano, que aparece en la página "
+        "siguiente tal como se escaneó.",
+    )
+    nodes.append(Break())
+    nodes += page(
+        "2 Documento adjunto",
+        "Esta hoja se imprimió, se firmó a mano y se volvió a escanear antes de unirla al "
+        "expediente, así que solo existe como imagen.",
+        "Su contenido debe recuperarse con reconocimiento óptico y quedar en el mismo orden "
+        "que el resto del expediente.",
+    )
+    nodes.append(Break())
+    nodes += page(
+        "3 Resolución",
+        "La resolución vuelve a ser texto digital, con el mismo formato que la solicitud inicial.",
+        "Se concede lo solicitado en todos sus términos.",
+    )
+    return nodes
+
+
+def _sales() -> list[Node]:
+    return [
+        H(1, "Quarterly sales summary"),
+        P("The table below lists units sold per region in each quarter of the year."),
+        T(
+            ("Region", "Q1", "Q2", "Q3", "Q4"),
+            (
+                ("North", "120", "135", "150", "160"),
+                ("South", "98", "102", "110", "125"),
+                ("East", "143", "139", "151", "149"),
+                ("West", "87", "95", "104", "118"),
+            ),
+        ),
+        P("Totals rose in every region during the second half of the year."),
+    ]
+
+
 CASES: dict[str, tuple[Callable[[], tuple[list[Node], bytes]], list[str]]] = {
     "synthetic-two-columns": (
         case_two_columns,
@@ -326,13 +653,43 @@ CASES: dict[str, tuple[Callable[[], tuple[list[Node], bytes]], list[str]]] = {
         ["paragraph_across_pages", "page_numbers", "lang_es"],
     ),
     "synthetic-hyphenation": (case_hyphenation, ["line_break_hyphens", "lang_es"]),
+    "scan-clean-300dpi": (scan_case("es", Scan(), 1), ["ocr", "scan_clean", "lang_es"]),
+    "scan-noise": (scan_case("en", Scan(noise=0.003), 2), ["ocr", "scan_noise", "lang_en"]),
+    "scan-skew-1deg": (scan_case("es", Scan(skew=1.0), 3), ["ocr", "scan_skew", "lang_es"]),
+    "scan-jpeg-q25": (
+        scan_case("en", Scan(jpeg_quality=25), 4),
+        ["ocr", "scan_jpeg", "lang_en"],
+    ),
+    "scan-150dpi": (scan_case("es", Scan(dpi=150), 5), ["ocr", "scan_low_dpi", "lang_es"]),
+    "scan-photocopy": (
+        scan_of(_survey, PHOTOCOPY, 7),
+        ["ocr", "scan_photocopy", "ordered_lists", "lang_en"],
+    ),
+    "scan-two-columns": (scan_two_columns, ["ocr", "two_column", "running_heads", "lang_en"]),
+    "scan-serif-es": (
+        scan_of(_library_report, Scan(dpi=200, skew=0.3, bilevel=True), 8, SERIF),
+        ["ocr", "serif", "numbered_headings", "paragraph_across_pages", "lang_es"],
+    ),
+    "scan-rotated-90": (
+        scan_of(_inventory, Scan(quarter_turns=1), 9),
+        ["ocr", "scan_rotated", "lang_en"],
+    ),
+    "scan-mixed": (
+        scan_of(_mixed, Scan(noise=0.001, pages=(2,)), 10),
+        ["ocr", "mixed_digital_scan", "lang_es"],
+    ),
+    "scan-table": (scan_of(_sales, Scan(), 11), ["ocr", "simple_tables", "lang_en"]),
+    "scan-faint": (
+        scan_of(_minutes, Scan(contrast=(150, 215)), 12),
+        ["ocr", "scan_low_contrast", "lang_es"],
+    ),
 }
 
 
 def write_case(name: str, check: bool) -> bool:
     build, phenomena = CASES[name]
     nodes, pdf = build()
-    case_dir = ROOT / name
+    case_dir = (ROOT.parent / "pdf-ocr" if name.startswith("scan-") else ROOT) / name
     files = {
         "input.pdf": pdf,
         "case.yaml": (

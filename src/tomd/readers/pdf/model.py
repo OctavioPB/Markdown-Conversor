@@ -47,6 +47,7 @@ class Line:
     baseline: float
     size: float  # dominant size (by characters)
     page: int  # 1-based
+    confidence: float = 1.0  # OCR word confidence; 1.0 for digital text
 
     @property
     def text(self) -> str:
@@ -101,6 +102,10 @@ class TextBlock:
     @property
     def bbox(self) -> tuple[float, float, float, float]:
         return (self.x0, self.bottom, self.x1, self.top)
+
+    @property
+    def confidence(self) -> float:
+        return min(line.confidence for line in self.lines)
 
 
 @dataclass(frozen=True, slots=True)

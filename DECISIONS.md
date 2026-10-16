@@ -245,3 +245,27 @@ dependen de usar `--backend docling` a mano. **Pendiente para aceptar:** el corp
 sintético favorece al heurístico (fuentes limpias, maquetación regular); hace falta
 repetir el benchmark de calidad sobre PDFs reales de dos columnas con `expected.md`
 revisado antes de pasar este ADR a Aceptada.
+
+## ADR-017 — OCR con Tesseract (dependencia de sistema opcional) vía pytesseract
+**Estado:** Aceptada (verificado el 2026-10-16: Tesseract 5.4.0, tessdata_fast)
+**Contexto:** La Fase 6 exige OCR local (sin APIs externas) para páginas escaneadas o
+con texto basura, en español e inglés, dentro del presupuesto de memoria por worker.
+**Decisión:**
+- Motor: Tesseract (Apache-2.0), instalado como software de sistema; no se distribuye con
+  tomd. Si falta y una página lo necesita, la conversión sigue y se emite
+  `pdf.ocr_unavailable` (no es un error fatal).
+- Binding: `pytesseract` (Apache-2.0, Python puro, llama al ejecutable). Se usa la salida
+  TSV (cajas y confianza por palabra) para construir `Line` en coordenadas PDF, de modo
+  que el resto del pipeline heurístico (bloques, títulos, orden) no cambia.
+- Datos de idioma `spa+eng` de `tessdata_fast` (Apache-2.0), buscados en
+  `TOMD_TESSDATA` o en `%LOCALAPPDATA%/tomd/tessdata` (o la instalación por defecto).
+- Renderizado a 300 ppp con pypdfium2; `OMP_THREAD_LIMIT=1` por determinismo y memoria.
+- Detector por página: menos de 20 caracteres con una imagen que cubre > 50 % de la
+  página, o > 30 % de caracteres basura; `--ocr always|never|auto` para forzarlo.
+**Alternativas consideradas:**
+- `tesserocr` (MIT, API de C): más rápido, pero sin wheels fiables para Windows.
+- docling con OCR: arrastra modelos y memoria (ADR-016); innecesario para escaneados simples.
+- Modelos de visión (Nougat y similares): fuera del presupuesto de memoria (PLAN.md).
+**Consecuencias:** Un proceso de Tesseract por página (coste fijo de arranque). La
+calidad depende de los datos de idioma instalados. Sin diccionario, un texto OCR previo
+legible pero erróneo no se detecta automáticamente: hay que forzar `--ocr always`.

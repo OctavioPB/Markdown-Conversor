@@ -79,3 +79,12 @@ def test_reading_order_is_kendall_tau_over_matched_paragraphs(eval_corpus: Modul
     swapped = "\n\n".join([paras[0], paras[2], paras[1], paras[3]])
     assert eval_corpus.reading_order(swapped, expected) == (5 - 1) / 6
     assert eval_corpus.reading_order("short", "short") is None
+
+
+def test_reading_order_pairs_near_duplicates_by_position(eval_corpus: ModuleType) -> None:
+    """An OCR slip ("lt" for "It") makes paragraph 2 as similar to expected 3 as to its own
+    expected 2; content cannot tell them apart, so it must not count as a swap."""
+    body = "carries enough words to wrap over several lines of a narrow column."
+    paras = [f"Paragraph {i}. It {body}" for i in range(1, 5)]
+    output = "\n\n".join([paras[0], f"Paragraph 2. lt {body}", paras[2], paras[3]])
+    assert eval_corpus.reading_order(output, "\n\n".join(paras)) == 1.0

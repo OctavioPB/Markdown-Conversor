@@ -83,10 +83,14 @@ y las tablas no representables generan diagnóstico + HTML embebido.
 precisión de orden de lectura ≥ 0.90 en el corpus de dos columnas.
 
 ## Fase 6 — OCR
-- [ ] Detector "¿necesita OCR?" por página (densidad de texto, proporción de basura)
-- [ ] Integración Tesseract (spa+eng) para páginas escaneadas
-- [ ] La confianza OCR viaja en `Provenance` y genera diagnósticos bajo un umbral
+- [x] Detector "¿necesita OCR?" por página (densidad de texto, proporción de basura)
+- [x] Integración Tesseract (spa+eng) para páginas escaneadas (ADR-017; `--ocr auto|always|never`)
+- [x] La confianza OCR viaja en `Provenance` y genera diagnósticos bajo un umbral
 - [ ] Corpus: ≥ 5 PDF escaneados de calidades distintas
+      (12 escaneos sintéticos degradados en `tests/corpus/pdf-ocr/`: limpio, ruido, inclinación,
+      JPEG, 150 ppp, fotocopia, dos columnas, serif es, girado 90°, mixto digital+escaneo,
+      tabla con rejilla y bajo contraste; similitud 0.994–1.0; falta revisar los borradores
+      y añadir escaneos reales)
 
 **Terminado cuando:** el detector no marca para OCR ninguna página digital del corpus,
 y la similitud en escaneados limpios es ≥ 0.90.

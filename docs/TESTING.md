@@ -32,6 +32,11 @@ thresholds:                    # opcional; sustituye los de la fase
   text_similarity: 0.93
 ```
 
+Los PDF escaneados viven en `tests/corpus/pdf-ocr/` (umbral propio: similitud ≥ 0.90).
+Necesitan Tesseract (ADR-017): sus casos llevan la marca `slow` y se saltan si el motor no
+está instalado. Los cinco actuales los genera `scripts/make_synthetic_pdfs.py` rasterizando
+un PDF digital y degradándolo de forma determinista (semilla fija).
+
 `phenomena` permite agrupar resultados ("¿cómo vamos en `two_column`?"), lo que es más
 informativo que el promedio global.
 

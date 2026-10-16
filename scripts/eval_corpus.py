@@ -42,6 +42,8 @@ DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = {
     "epub": {"text_similarity": 0.98, "heading_f1": 0.95},
     "wikipedia": {"text_similarity": 0.97, "math_recall": 1.0},
     "pdf": {"text_similarity": 0.95, "heading_f1": 0.85},
+    # PLAN phase 6: similarity >= 0.90 on clean scans.
+    "pdf-ocr": {"text_similarity": 0.90, "heading_f1": 0.85},
 }
 
 _ATX = re.compile(r"^(#{1,6}) +(.*?)(?: +#+)? *$")
@@ -186,6 +188,10 @@ MIN_ORDER_PARAGRAPH = 20
 # Paragraphs match when their similarity (rapidfuzz ratio, 0-100) reaches this
 # (docs/TESTING.md: "emparejados por similitud >= 0.9").
 ORDER_MATCH_RATIO = 90.0
+# Candidates this close to the best score are indistinguishable by content (near-duplicate
+# paragraphs, "Paragraph 3.2" vs "3.3" with an OCR slip): the one nearest by relative
+# position is taken, since their text carries no information about order.
+ORDER_TIE = 1.0
 
 
 def paragraphs(markdown: str) -> list[str]:
@@ -196,21 +202,22 @@ def paragraphs(markdown: str) -> list[str]:
 def reading_order(output: str, expected: str) -> float | None:
     """Kendall's tau between the order of matched paragraphs in output and expected."""
     out_paras = paragraphs(output)
+    exp_paras = paragraphs(expected)
     used: set[int] = set()
     positions: list[int] = []
-    for para in paragraphs(expected):
-        best, best_score = -1, ORDER_MATCH_RATIO
-        for j, candidate in enumerate(out_paras):
-            if j in used:
-                continue
-            score = fuzz.ratio(para, candidate)
-            # Strictly better, or the first candidate over the threshold: identical
-            # paragraphs (repeated boilerplate) then match in document order.
-            if score > best_score or (best < 0 and score >= best_score):
-                best, best_score = j, score
-        if best >= 0:
-            used.add(best)
-            positions.append(best)
+    for i, para in enumerate(exp_paras):
+        scores = {
+            j: fuzz.ratio(para, candidate) for j, candidate in enumerate(out_paras) if j not in used
+        }
+        top = max(scores.values(), default=0.0)
+        if top < ORDER_MATCH_RATIO:
+            continue
+        where = i / max(len(exp_paras) - 1, 1)
+        tied = [j for j, score in scores.items() if score >= top - ORDER_TIE]
+        # Nearest relative position, then document order (repeated boilerplate).
+        best = min(tied, key=lambda j: (abs(j / max(len(out_paras) - 1, 1) - where), j))
+        used.add(best)
+        positions.append(best)
     n = len(positions)
     if n < 2:
         return None

@@ -10,6 +10,8 @@ from types import ModuleType
 
 import pytest
 
+from tomd.readers.pdf.ocr import OcrEngine
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -36,9 +38,19 @@ def test_every_case_has_an_input_and_metadata() -> None:
         assert config.get("phenomena"), f"{case.case_id}: case.yaml needs phenomena"
 
 
-@pytest.mark.parametrize("case", CASES, ids=[c.case_id for c in CASES])
+# Scanned cases run Tesseract: slow, and only where it is installed (ADR-017).
+_OCR_SOURCE = "pdf-ocr"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [pytest.param(c, marks=pytest.mark.slow) if c.source == _OCR_SOURCE else c for c in CASES],
+    ids=[c.case_id for c in CASES],
+)
 def test_case_meets_thresholds(case: object) -> None:
     if case.is_draft:  # type: ignore[attr-defined]
         pytest.skip("expected.md is a DRAFT pending human review")
+    if case.source == _OCR_SOURCE and OcrEngine.find("eng") is None:  # type: ignore[attr-defined]
+        pytest.skip("Tesseract is not installed")
     result = EVAL.evaluate(case)
     assert not result.failures, "; ".join(result.failures)

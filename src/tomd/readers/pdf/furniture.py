@@ -16,12 +16,12 @@ _ANY_PARITY = -1
 class _Slot:
     parity: int
     edge: str  # "top" or "bottom"
-    height: int  # distance to the page edge, in units of the tolerance
 
 
 @dataclass
 class _Cluster:
     text: str  # first text seen, the representative
+    distance: float  # to the page edge, of the first line seen
     pages: set[int] = field(default_factory=set)
 
 
@@ -45,14 +45,15 @@ def remove_furniture(
     for number, page_lines in lines.items():
         band = cfg.furniture_band * heights[number]
         for index, line in enumerate(page_lines):
-            located = _locate(line, number, heights[number], band, unit)
+            located = _locate(line, number, heights[number], band)
             if located is None:
                 continue
-            slot, text = located
+            slot, distance, text = located
             # Counted per parity (alternating running heads) and over all pages (short
             # documents have too few pages of each parity).
-            for key in (slot, _Slot(_ANY_PARITY, slot.edge, slot.height)):
-                cluster = _find(clusters.setdefault(key, []), text, cfg.furniture_text_similarity)
+            for key in (slot, _Slot(_ANY_PARITY, slot.edge)):
+                group = clusters.setdefault(key, [])
+                cluster = _find(group, text, distance, unit, cfg.furniture_text_similarity)
                 cluster.pages.add(number)
                 membership.setdefault((number, index), []).append(cluster)
 
@@ -78,9 +79,7 @@ def remove_furniture(
     return kept, removed
 
 
-def _locate(
-    line: Line, page: int, height: float, band: float, unit: float
-) -> tuple[_Slot, str] | None:
+def _locate(line: Line, page: int, height: float, band: float) -> tuple[_Slot, float, str] | None:
     if line.top >= height - band:
         edge, distance = "top", height - line.top
     elif line.bottom <= band:
@@ -90,13 +89,20 @@ def _locate(
     text = _NOT_WORD.sub("", _DIGITS.sub("#", line.text).lower())
     if not text:
         return None
-    return _Slot(page % 2, edge, round(distance / unit) if unit else 0), text
+    return _Slot(page % 2, edge), distance, text
 
 
-def _find(group: list[_Cluster], text: str, threshold: float) -> _Cluster:
+def _find(
+    group: list[_Cluster], text: str, distance: float, unit: float, threshold: float
+) -> _Cluster:
+    """The cluster at about the same distance from the edge with similar text. Distances
+    are compared, not bucketed: scans and OCR place one running head a little higher or
+    lower from page to page, and a bucket boundary would split it."""
     for cluster in group:
+        if abs(cluster.distance - distance) > unit:
+            continue
         if cluster.text == text or SequenceMatcher(None, cluster.text, text).ratio() >= threshold:
             return cluster
-    cluster = _Cluster(text)
+    cluster = _Cluster(text, distance)
     group.append(cluster)
     return cluster

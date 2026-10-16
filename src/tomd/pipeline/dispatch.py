@@ -10,6 +10,7 @@ from pathlib import Path
 from tomd import __version__
 from tomd.errors import UnsupportedSourceError
 from tomd.ir import Diagnostic, Document
+from tomd.readers.pdf.ocr import OcrMode
 from tomd.readers.pdf.reader import DEFAULT_BACKEND, PdfReader
 from tomd.readers.wikipedia.client import parse_article_ref
 from tomd.readers.wikipedia.reader import WikipediaReader, read_parsoid_html
@@ -28,7 +29,11 @@ class ConversionResult:
 
 
 def read_source(
-    source: str, *, revision: int | None = None, pdf_backend: str = DEFAULT_BACKEND
+    source: str,
+    *,
+    revision: int | None = None,
+    pdf_backend: str = DEFAULT_BACKEND,
+    ocr: OcrMode = OcrMode.AUTO,
 ) -> Document:
     path = Path(source)
     if path.is_file():
@@ -39,7 +44,7 @@ def read_source(
                 return read_parsoid_html(data)
             raise UnsupportedSourceError(f"Generic HTML is out of scope: {source}")
         if suffix == ".pdf":
-            return PdfReader(backend=pdf_backend).read(source)
+            return PdfReader(backend=pdf_backend, ocr=ocr).read(source)
         if suffix == ".epub":
             raise UnsupportedSourceError(f"No reader for {suffix} yet (see PLAN.md): {source}")
         raise UnsupportedSourceError(f"Unrecognised file type: {source}")
@@ -64,8 +69,9 @@ def convert(
     *,
     revision: int | None = None,
     pdf_backend: str = DEFAULT_BACKEND,
+    ocr: OcrMode = OcrMode.AUTO,
 ) -> ConversionResult:
-    doc = read_source(source, revision=revision, pdf_backend=pdf_backend)
+    doc = read_source(source, revision=revision, pdf_backend=pdf_backend, ocr=ocr)
     slug, result, doc = render_document(doc)
     out_dir.mkdir(parents=True, exist_ok=True)
     if doc.assets:

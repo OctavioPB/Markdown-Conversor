@@ -116,6 +116,45 @@ class PdfHeuristicsConfig:
     # Pages whose share of garbage characters exceeds this need OCR.
     garbage_ratio: float = 0.3
 
+    # --- OCR (§8, ADR-017) ---
+    # A page whose largest image covers more than this fraction, with no text layer, is
+    # a scan.
+    ocr_min_image_cover: float = 0.5
+    # Rendering resolution for Tesseract (its recommended minimum for body text).
+    ocr_dpi: int = 300
+    # Ascender (and capital) height above the baseline, as a share of the font size, in
+    # common text faces (measured: 32 px for 10.5 pt and 46 px for 15 pt at 300 dpi).
+    ocr_cap_height: float = 0.72
+    # A line whose cap height exceeds its OCR paragraph's median by this factor keeps its
+    # own size (heading sizes start at about 1.15 × body).
+    ocr_own_size_ratio: float = 1.12
+    # A line whose mean stroke width exceeds the page median by this factor is bold (OCR
+    # has no font names). Measured on the scan corpus: regular lines up to 1.15 × the
+    # median, bold headings from 1.55 ×.
+    ocr_bold_stroke_ratio: float = 1.35
+    # Pages whose mean OCR confidence is below this get pdf.ocr_low_confidence.
+    ocr_min_confidence: float = 0.6
+    # A lone glyph followed by a gap wider than this × the font size is a list bullet that
+    # Tesseract misread (word spaces are about 0.25 em; bullet indents about 1 em).
+    ocr_bullet_gap: float = 0.6
+    # Skew search range and step in degrees; hand-fed scans are rarely off by more than 3°.
+    ocr_max_skew: float = 3.0
+    ocr_skew_step: float = 0.1
+    # Below this angle deskewing is not worth the resampling blur.
+    ocr_min_skew: float = 0.2
+    # Straight ink runs at least this long (points) and at most this thick are ruled
+    # lines; the longest text strokes (dashes) stay far below half an inch.
+    ocr_rule_min_length: float = 36.0
+    ocr_rule_max_thickness: float = 2.5
+    # Share (percent) of darkest and lightest pixels ignored when stretching contrast, so
+    # a few noise specks do not hold the range open.
+    ocr_contrast_cutoff: float = 0.1
+    # Tesseract OSD confidence below which the page orientation is left unchanged (its
+    # answers on upright text pages score 10-20; sparse pages score below 2).
+    ocr_orientation_confidence: float = 2.0
+    # Punctuation-only "words" under this confidence are noise speckles, dropped.
+    ocr_speckle_confidence: float = 0.6
+
     # --- Document statistics (§1) ---
     # Font sizes are rounded to this step (points) before taking the mode.
     size_rounding: float = 0.5

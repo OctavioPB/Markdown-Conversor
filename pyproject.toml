@@ -8,6 +8,7 @@ dependencies = [
     "lxml>=6.1.3",
     "pillow>=12.3.0",
     "pypdfium2>=5.14.0",
+    "pytesseract>=0.3.13",
 ]
 
 [project.optional-dependencies]
@@ -66,5 +67,5 @@ markers = [
 
 [[tool.mypy.overrides]]
 # pypdfium2 ships no type information (ADR-014); its use is confined to readers/pdf/extract.py.
-module = ["pypdfium2", "pypdfium2.*", "docling", "docling.*", "pypandoc"]
+module = ["pypdfium2", "pypdfium2.*", "docling", "docling.*", "pypandoc", "pytesseract", "pytesseract.*"]
 ignore_missing_imports = true

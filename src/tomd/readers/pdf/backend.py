@@ -2,11 +2,12 @@
 `heuristic` backend chains the stages of the pdf-layout-heuristics skill."""
 
 import hashlib
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from tomd.ir import (
     Asset,
@@ -46,6 +47,14 @@ from tomd.readers.pdf.footnotes import link_footnotes
 from tomd.readers.pdf.furniture import remove_furniture
 from tomd.readers.pdf.lines import rejoin_rows, rows_to_lines, split_rows
 from tomd.readers.pdf.model import DocStats, Line, PageInfo, PdfFigure, TextBlock
+from tomd.readers.pdf.ocr import (
+    OcrEngine,
+    OcrFailedError,
+    OcrMode,
+    OcrPage,
+    needs_ocr,
+    ocr_page,
+)
 from tomd.readers.pdf.order import order_lines
 from tomd.readers.pdf.tables import (
     PdfTable,
@@ -62,6 +71,11 @@ PDF_PERMISSIONS_RESTRICTED = "pdf.permissions_restricted"
 PDF_LOW_CONFIDENCE = "pdf.low_confidence"
 PDF_ROTATED_TEXT_DROPPED = "pdf.rotated_text_dropped"
 PDF_FURNITURE_REMOVED = "pdf.furniture_removed"
+PDF_OCR_APPLIED = "pdf.ocr_applied"
+PDF_OCR_LOW_CONFIDENCE = "pdf.ocr_low_confidence"
+PDF_OCR_UNAVAILABLE = "pdf.ocr_unavailable"
+# Tesseract languages, tried together (ADR-017); override with TOMD_OCR_LANG.
+DEFAULT_OCR_LANGUAGES = "spa+eng"
 
 # Pages with fewer extracted characters than this and at least one image are scans.
 _MIN_TEXT_CHARS = 20
@@ -95,14 +109,53 @@ class LayoutResult:
     uncertain_pages: list[int] = field(default_factory=list)
     figures: list[PdfFigure] = field(default_factory=list)
     tables: list[PdfTable] = field(default_factory=list)
+    ocr_confidence: dict[int, float] = field(default_factory=dict)  # page -> mean confidence
+    ocr_pages: dict[int, OcrPage] = field(default_factory=dict)
+    ocr_missing: list[int] = field(default_factory=list)  # flagged pages left without OCR
 
 
-def analyze_layout(path: Path, cfg: PdfHeuristicsConfig = DEFAULT_CONFIG) -> LayoutResult:
+def analyze_layout(
+    path: Path,
+    cfg: PdfHeuristicsConfig = DEFAULT_CONFIG,
+    ocr: OcrMode = OcrMode.AUTO,
+    engine: OcrEngine | None = None,
+) -> LayoutResult:
     result = LayoutResult()
     with open_pdf(path) as pdf:
         for content in iter_pages(pdf, cfg.min_figure_area):
             info = content.info
             result.pages.append(info)
+            if needs_ocr(info, content.figures, cfg, ocr):
+                scanned = _ocr(pdf, info, engine, cfg) if engine else None
+                if scanned is None:
+                    result.ocr_missing.append(info.number)
+                else:
+                    grids = find_grids(scanned.rulings, cfg.table_snap_tolerance)
+                    tables, _ = build_tables(grids, scanned.chars, info.number, path.name, cfg)
+                    result.tables.extend(tables)
+                    lines = [ln for ln in scanned.lines if not _in_tables(ln, tables)]
+                    if scanned.quarter_turns % 2:  # read sideways: the page is portrait now
+                        result.pages[-1] = replace(info, width=scanned.width, height=scanned.height)
+                    result.ocr_pages[info.number] = scanned
+                    result.lines[info.number] = lines
+                    result.ocr_confidence[info.number] = (
+                        round(sum(ln.confidence for ln in lines) / len(lines), 3) if lines else 0.0
+                    )
+                    # The scan itself is now text, not a figure.
+                    area = info.width * info.height or 1.0
+                    kept = [
+                        f
+                        for f in content.figures
+                        if _area(f.bbox) / area <= cfg.ocr_min_image_cover
+                    ]
+                    if scanned.quarter_turns and kept:
+                        # Their boxes are in the sideways frame: counted as dropped images.
+                        result.pages[-1] = replace(
+                            result.pages[-1], image_count=info.image_count + len(kept)
+                        )
+                        kept = []
+                    result.figures.extend(kept)
+                    continue
             result.figures.extend(content.figures)
             grids = find_grids(content.rulings, cfg.table_snap_tolerance)
             tables, chars = build_tables(grids, content.chars, info.number, path.name, cfg)
@@ -143,6 +196,26 @@ def analyze_layout(path: Path, cfg: PdfHeuristicsConfig = DEFAULT_CONFIG) -> Lay
     return result
 
 
+def _in_tables(line: Line, tables: list[PdfTable]) -> bool:
+    x, y = (line.x0 + line.x1) / 2, (line.top + line.bottom) / 2
+    return any(t.bbox[0] <= x <= t.bbox[2] and t.bbox[1] <= y <= t.bbox[3] for t in tables)
+
+
+def _area(bbox: tuple[float, float, float, float]) -> float:
+    return (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+
+
+def _ocr(pdf: Any, info: PageInfo, engine: OcrEngine, cfg: PdfHeuristicsConfig) -> OcrPage | None:
+    """OCR of one page, or None when the engine fails (reported as unavailable)."""
+    page = pdf[info.number - 1]
+    try:
+        return ocr_page(engine, page, info.number, cfg)
+    except OcrFailedError:
+        return None
+    finally:
+        page.close()
+
+
 def _promote_title(classified: list[Classified]) -> list[Classified]:
     """The largest heading on page 1 is the document title (H1): a larger font elsewhere
     (a figure label, a cover badge) must not push the title down a level."""
@@ -165,12 +238,16 @@ def _promote_title(classified: list[Classified]) -> list[Classified]:
 class HeuristicBackend:
     config: PdfHeuristicsConfig = DEFAULT_CONFIG
     name: str = "heuristic"
+    ocr: OcrMode = OcrMode.AUTO
 
     def convert(self, path: Path) -> Document:
         diagnostics: list[Diagnostic] = []
         with open_pdf(path) as pdf:
             meta = read_metadata(pdf)
-        layout = analyze_layout(path, self.config)
+        engine = None
+        if self.ocr is not OcrMode.NEVER:
+            engine = OcrEngine.find(os.environ.get("TOMD_OCR_LANG") or DEFAULT_OCR_LANGUAGES)
+        layout = analyze_layout(path, self.config, self.ocr, engine)
         source = path.name
 
         def report(code: str, severity: Severity, message: str, page: int | None = None) -> None:
@@ -181,6 +258,37 @@ class HeuristicBackend:
         images = 0
         for page in layout.pages:
             images += page.image_count
+            if page.number in layout.ocr_confidence:
+                confidence = layout.ocr_confidence[page.number]
+                scanned = layout.ocr_pages[page.number]
+                fixes = []
+                if scanned.quarter_turns:
+                    fixes.append(f"turned {90 * scanned.quarter_turns}° clockwise")
+                if scanned.skew:
+                    fixes.append(f"deskewed by {scanned.skew:.1f}°")
+                report(
+                    PDF_OCR_APPLIED,
+                    "info",
+                    f"Text recognised by OCR (mean confidence {confidence:.2f}"
+                    + "".join(f"; {fix}" for fix in fixes)
+                    + ").",
+                    page.number,
+                )
+                if confidence < self.config.ocr_min_confidence:
+                    report(
+                        PDF_OCR_LOW_CONFIDENCE,
+                        "warning",
+                        f"OCR confidence {confidence:.2f} is low; check the text.",
+                        page.number,
+                    )
+                continue
+            if page.number in layout.ocr_missing and self.ocr is not OcrMode.NEVER:
+                report(
+                    PDF_OCR_UNAVAILABLE,
+                    "warning",
+                    "Page needs OCR but Tesseract or its language data is missing (ADR-017).",
+                    page.number,
+                )
             has_image = page.image_count or any(f.page == page.number for f in layout.figures)
             if page.char_count < _MIN_TEXT_CHARS and has_image:
                 report(
@@ -344,7 +452,9 @@ def _list_block(items: list[Classified], source: str) -> ListBlock:
 
 
 def _provenance(c: Classified, source: str) -> Provenance:
-    return Provenance(source, c.block.page, c.block.bbox, round(c.confidence, 3))
+    # OCR lines carry the recogniser's confidence; digital lines are 1.0.
+    confidence = c.confidence * c.block.confidence
+    return Provenance(source, c.block.page, c.block.bbox, round(confidence, 3))
 
 
 def _sha256(path: Path) -> str:
@@ -355,10 +465,17 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _docling() -> PdfBackend:
+def _docling(ocr: OcrMode) -> PdfBackend:  # docling runs its own OCR models
     from tomd.readers.pdf.docling_backend import DoclingBackend
 
     return DoclingBackend()
 
 
-BACKENDS: dict[str, Callable[[], PdfBackend]] = {"heuristic": HeuristicBackend, "docling": _docling}
+def _heuristic(ocr: OcrMode) -> PdfBackend:
+    return HeuristicBackend(ocr=ocr)
+
+
+BACKENDS: dict[str, Callable[[OcrMode], PdfBackend]] = {
+    "heuristic": _heuristic,
+    "docling": _docling,
+}
