@@ -1,0 +1,6 @@
+source: "https://es.wikipedia.org/wiki/Ecuaci%C3%B3n_de_segundo_grado (revision 175809584, CC BY-SA 4.0)"
+revision_id: 175809584
+excerpt: "Ecuaciones incompletas, Completa con coeficiente lineal par, Completa reducida con coeficiente lineal par; reference list pruned to cited notes"
+phenomena: [inline_math, display_math_indented, lang_es]
+known_limits:
+  - "Images are not downloaded (ADR-013): captions only"

@@ -1,0 +1,5 @@
+source: "arXiv:2310.06825v1 (Mistral 7B), pages 1-2, CC BY 4.0"
+phenomena: [single_column, figures, rule_less_table, footnotes, lang_en]
+known_limits:
+  - "Hyphenated compounds split at line ends lose the hyphen without a dictionary (ADR-015)"
+  - "Math letters (W, k, h_i) stay as italic text: PDF formulas are not recovered"

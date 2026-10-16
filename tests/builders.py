@@ -27,3 +27,20 @@ def body(markdown: str) -> str:
     if rest.startswith("# "):
         rest = rest.split("\n\n", 1)[1] if "\n\n" in rest else ""
     return rest
+
+
+def bare(value: object) -> object:
+    """Recursively drop provenance so IR can be compared structurally."""
+    import dataclasses
+
+    if isinstance(value, tuple):
+        return tuple(bare(v) for v in value)
+    if isinstance(value, list):
+        return [bare(v) for v in value]
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        changes = {
+            f.name: None if f.name == "provenance" else bare(getattr(value, f.name))
+            for f in dataclasses.fields(value)
+        }
+        return dataclasses.replace(value, **changes)
+    return value

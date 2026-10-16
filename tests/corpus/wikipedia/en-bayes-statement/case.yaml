@@ -1,0 +1,6 @@
+source: "https://en.wikipedia.org/wiki/Bayes%27_theorem (revision 1380204666, CC BY-SA 4.0)"
+revision_id: 1380204666
+excerpt: "Statement of theorem; reference list pruned to cited notes"
+phenomena: [block_math, inline_math, lang_en]
+known_limits:
+  - "Images are not downloaded (ADR-013): captions only"

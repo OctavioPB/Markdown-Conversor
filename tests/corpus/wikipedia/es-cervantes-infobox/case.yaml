@@ -1,0 +1,6 @@
+source: "https://es.wikipedia.org/wiki/Miguel_de_Cervantes (revision 175805219, CC BY-SA 4.0)"
+revision_id: 175805219
+excerpt: "lead; reference list pruned to cited notes"
+phenomena: [infobox, references, lang_es]
+known_limits:
+  - "Images are not downloaded (ADR-013): captions only"

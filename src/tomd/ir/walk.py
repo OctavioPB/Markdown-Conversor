@@ -110,3 +110,16 @@ def plain_text(nodes: tuple[Inline, ...]) -> str:
             case LineBreak():
                 parts.append(" ")
     return "".join(parts)
+
+
+def unwrap_emphasis(nodes: tuple[Inline, ...]) -> tuple[Inline, ...]:
+    """Remove Emph wrappers (keeping their content), e.g. inside an italic caption."""
+    out: list[Inline] = []
+    for node in nodes:
+        if isinstance(node, Emph):
+            out.extend(unwrap_emphasis(node.children))
+        elif isinstance(node, Strong | Link):
+            out.append(replace(node, children=unwrap_emphasis(node.children)))
+        else:
+            out.append(node)
+    return tuple(out)

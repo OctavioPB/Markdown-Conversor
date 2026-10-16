@@ -43,36 +43,41 @@ del serializador re-parseada con `markdown-it-py` produce el mismo árbol de blo
 **Al cerrar:** calibrar umbrales del resto del plan con este baseline (ADR).
 
 ## Fase 3 — Lector Wikipedia
-- [ ] Cliente de la API de Wikimedia con User-Agent identificable y límite de tasa
-- [ ] Verificar el endpoint vigente de HTML Parsoid (ver ADR-004) y fijarlo
-- [ ] Reutilizar `html_common`; reglas específicas: infoboxes, navboxes, referencias, `<math>`
-- [ ] Recuperar LaTeX de las fórmulas desde las anotaciones de Parsoid
-- [ ] Front matter con licencia CC BY-SA, URL y `revision_id` (reproducibilidad)
-- [ ] Fixtures HTTP grabadas; ningún test toca la red
+- [x] Cliente de la API de Wikimedia con User-Agent identificable y límite de tasa
+- [x] Verificar el endpoint vigente de HTML Parsoid (ver ADR-004) y fijarlo
+- [x] Reutilizar `html_common`; reglas específicas: infoboxes, navboxes, referencias, `<math>`
+- [x] Recuperar LaTeX de las fórmulas desde las anotaciones de Parsoid
+- [x] Front matter con licencia CC BY-SA, URL y `revision_id` (reproducibilidad)
+- [x] Fixtures HTTP grabadas; ningún test toca la red
 - [ ] Corpus: ≥ 10 artículos (tablas complejas, fórmulas, listas anidadas, idiomas es/en)
+      (11 entradas grabadas en `tests/corpus/wikipedia/`; faltan los `expected.md` revisados)
 
 **Terminado cuando:** similitud ≥ 0.97, todas las fórmulas del corpus salen como LaTeX,
 y las tablas no representables generan diagnóstico + HTML embebido.
 
 ## Fase 4 — PDF digital simple
-- [ ] Backend `heuristic` sobre extracción de caracteres con posición y fuente (ADR-005)
-- [ ] Agrupación caracteres → líneas → bloques
-- [ ] Unión de líneas en párrafos y reparación de guiones de corte
-- [ ] Normalización Unicode (ligaduras, espacios raros) y detección de texto basura
-- [ ] Títulos por estadística de tamaño/peso de fuente en el documento
-- [ ] Listas por viñetas y numeración
+- [x] Backend `heuristic` sobre extracción de caracteres con posición y fuente (ADR-005)
+- [x] Agrupación caracteres → líneas → bloques
+- [x] Unión de líneas en párrafos y reparación de guiones de corte
+- [x] Normalización Unicode (ligaduras, espacios raros) y detección de texto basura
+- [x] Títulos por estadística de tamaño/peso de fuente en el documento
+- [x] Listas por viñetas y numeración
 - [ ] Corpus: ≥ 10 PDF de una columna (artículos arXiv con licencia CC, manuales)
+      (5 sintéticos en `tests/corpus/pdf/` con borrador; faltan PDFs reales y la revisión)
 
 **Terminado cuando:** similitud ≥ 0.95 y F1 de títulos ≥ 0.85 en PDFs de una columna.
 
 ## Fase 5 — PDF de maquetación compleja
-- [ ] Orden de lectura multicolumna (XY-cut recursivo como base)
-- [ ] Eliminación de cabeceras y pies repetidos
+- [x] Orden de lectura multicolumna (XY-cut recursivo como base)
+- [x] Eliminación de cabeceras y pies repetidos
 - [ ] Detección y extracción de tablas
-- [ ] Figuras y pies de figura
+      (hecho: tablas con rejilla de líneas, con spans; falta la estrategia por alineación, §9.2)
+- [x] Figuras y pies de figura
 - [ ] **Benchmark de backends:** `heuristic` vs `docling` sobre el mismo corpus,
       midiendo calidad, tiempo por página y memoria pico → ADR que decide el default
-- [ ] Interfaz `PdfBackend` que permite elegir backend por CLI
+      (benchmark hecho: `docs/benchmarks/2026-10-16-pdf-backends.md`; ADR-016 Propuesta,
+      pendiente de repetir la calidad sobre PDFs reales de dos columnas revisados)
+- [x] Interfaz `PdfBackend` que permite elegir backend por CLI
 
 **Terminado cuando:** el ADR del benchmark está aceptado y el backend por defecto alcanza
 precisión de orden de lectura ≥ 0.90 en el corpus de dos columnas.

@@ -21,6 +21,7 @@ FOOTNOTE_MISSING_DEFINITION = "footnote.missing_definition"
 FOOTNOTE_DUPLICATE_DEFINITION = "footnote.duplicate_definition"
 HEADING_LEVEL_CLAMPED = "heading.level_clamped"
 DOC_TITLE_MISSING = "doc.title_missing"
+TEXT_INVALID_UNICODE = "text.invalid_unicode"
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,0 +1,6 @@
+source: "https://es.wikipedia.org/wiki/Sistema_solar (revision 175849655, CC BY-SA 4.0)"
+revision_id: 175849655
+excerpt: "Características generales; reference list pruned to cited notes"
+phenomena: [nested_lists, references, lang_es]
+known_limits:
+  - "Images are not downloaded (ADR-013): captions only"

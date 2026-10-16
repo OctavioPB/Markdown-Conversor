@@ -1,0 +1,6 @@
+source: "EMNLP 2023 main paper 1 (aclanthology.org/2023.emnlp-main.1), page 1, CC BY 4.0"
+phenomena: [two_column, author_footnotes, compound_hyphens, lang_en]
+known_limits:
+  - "Hyphenated compounds split at line ends lose the hyphen without a dictionary (ADR-015)"
+thresholds:
+  reading_order: 0.90

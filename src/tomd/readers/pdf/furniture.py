@@ -1,0 +1,102 @@
+"""Repeated headers and footers (§5), removed at line level before ordering."""
+
+import re
+from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+
+from tomd.readers.pdf.config import PdfHeuristicsConfig
+from tomd.readers.pdf.model import DocStats, Line, PageInfo
+
+_DIGITS = re.compile(r"\d+")
+_NOT_WORD = re.compile(r"[\W_]+")
+_ANY_PARITY = -1
+
+
+@dataclass(frozen=True, slots=True)
+class _Slot:
+    parity: int
+    edge: str  # "top" or "bottom"
+    height: int  # distance to the page edge, in units of the tolerance
+
+
+@dataclass
+class _Cluster:
+    text: str  # first text seen, the representative
+    pages: set[int] = field(default_factory=set)
+
+
+def remove_furniture(
+    lines: dict[int, list[Line]],
+    pages: list[PageInfo],
+    stats: DocStats,
+    cfg: PdfHeuristicsConfig,
+) -> tuple[dict[int, list[Line]], int]:
+    """Drop lines repeated near the same page edge on many pages of the same parity.
+
+    Odd and even pages are counted apart: books alternate the book title and the chapter
+    title in their running heads. Texts are compared fuzzily, because the text layer of
+    OCRed documents varies from page to page ("Pinilla" / "Pinillay"). Returns the
+    remaining lines and how many were removed.
+    """
+    heights = {p.number: p.height for p in pages}
+    unit = cfg.furniture_y_tolerance * stats.body_size
+    clusters: dict[_Slot, list[_Cluster]] = {}
+    membership: dict[tuple[int, int], list[_Cluster]] = {}
+    for number, page_lines in lines.items():
+        band = cfg.furniture_band * heights[number]
+        for index, line in enumerate(page_lines):
+            located = _locate(line, number, heights[number], band, unit)
+            if located is None:
+                continue
+            slot, text = located
+            # Counted per parity (alternating running heads) and over all pages (short
+            # documents have too few pages of each parity).
+            for key in (slot, _Slot(_ANY_PARITY, slot.edge, slot.height)):
+                cluster = _find(clusters.setdefault(key, []), text, cfg.furniture_text_similarity)
+                cluster.pages.add(number)
+                membership.setdefault((number, index), []).append(cluster)
+
+    per_parity = {parity: sum(1 for p in pages if p.number % 2 == parity) for parity in (0, 1)}
+    per_parity[_ANY_PARITY] = len(pages)
+    furniture = {
+        id(cluster)
+        for slot, group in clusters.items()
+        for cluster in group
+        if len(cluster.pages)
+        >= max(cfg.furniture_min_pages, cfg.furniture_min_share * per_parity[slot.parity])
+    }
+    removed = 0
+    kept: dict[int, list[Line]] = {}
+    for number, page_lines in lines.items():
+        kept[number] = []
+        for index, line in enumerate(page_lines):
+            members = membership.get((number, index), [])
+            if any(id(member) in furniture for member in members):
+                removed += 1
+            else:
+                kept[number].append(line)
+    return kept, removed
+
+
+def _locate(
+    line: Line, page: int, height: float, band: float, unit: float
+) -> tuple[_Slot, str] | None:
+    if line.top >= height - band:
+        edge, distance = "top", height - line.top
+    elif line.bottom <= band:
+        edge, distance = "bottom", line.bottom
+    else:
+        return None
+    text = _NOT_WORD.sub("", _DIGITS.sub("#", line.text).lower())
+    if not text:
+        return None
+    return _Slot(page % 2, edge, round(distance / unit) if unit else 0), text
+
+
+def _find(group: list[_Cluster], text: str, threshold: float) -> _Cluster:
+    for cluster in group:
+        if cluster.text == text or SequenceMatcher(None, cluster.text, text).ratio() >= threshold:
+            return cluster
+    cluster = _Cluster(text)
+    group.append(cluster)
+    return cluster

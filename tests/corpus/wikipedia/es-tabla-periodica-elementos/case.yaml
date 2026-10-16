@@ -1,0 +1,6 @@
+source: "https://es.wikipedia.org/wiki/Tabla_peri%C3%B3dica_de_los_elementos (revision 175692736, CC BY-SA 4.0)"
+revision_id: 175692736
+excerpt: "Elementos; reference list pruned to cited notes"
+phenomena: [simple_tables, lang_es]
+known_limits:
+  - "Images are not downloaded (ADR-013): captions only"

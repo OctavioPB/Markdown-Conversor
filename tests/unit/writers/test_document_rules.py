@@ -133,3 +133,14 @@ def test_M22_no_absolute_paths_or_timestamps() -> None:
     text = convert(doc(p("x"))).text
     assert "C:\\" not in text and "/home/" not in text
     assert "date" not in text.split("---")[1]
+
+
+def test_M01_lone_surrogates_are_replaced_with_diagnostic() -> None:
+    from tomd.ir import diagnostics as codes
+
+    result = render_markdown(
+        Document(DocumentMeta("T", "pdf", "x"), (p("a" + chr(0xD835) + "b"),)), slug="s"
+    )
+    result.text.encode("utf-8")  # must not raise
+    assert chr(0xFFFD) in result.text
+    assert [d.code for d in result.diagnostics] == [codes.TEXT_INVALID_UNICODE]

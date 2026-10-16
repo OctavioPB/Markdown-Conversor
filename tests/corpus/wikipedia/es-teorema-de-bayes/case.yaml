@@ -1,0 +1,6 @@
+source: "https://es.wikipedia.org/wiki/Teorema_de_Bayes (revision 175677607, CC BY-SA 4.0)"
+revision_id: 175677607
+excerpt: "lead, Teorema, Fórmula de Bayes; reference list pruned to cited notes"
+phenomena: [inline_math, display_math_indented, references, lang_es]
+known_limits:
+  - "Images are not downloaded (ADR-013): captions only"

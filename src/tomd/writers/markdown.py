@@ -39,6 +39,7 @@ from tomd.ir import (
     ThematicBreak,
 )
 from tomd.ir import diagnostics as codes
+from tomd.ir.walk import unwrap_emphasis
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +79,7 @@ _MEDIA_EXTENSIONS = {
     "image/webp": "webp",
 }
 
-# Separates two consecutive lists of the same kind (or two block quotes) so a parser does
+# Separates two consecutive lists of the same kind so a parser does
 # not merge them (ADR-011).
 _BLOCK_SEPARATOR = "<!-- -->"
 _FOOTNOTE_INDENT = "    "
@@ -151,6 +152,8 @@ def _front_matter(meta: DocumentMeta, diagnostics_count: int) -> str:
 _ASCII_WS = re.compile(r"[ \t\n\r\f\v]+")
 _CONTROL = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")
 _NEWLINES = re.compile(r"\r\n|[\r\n]")
+_SURROGATES = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + "]")
+_REPLACEMENT = chr(0xFFFD)
 
 
 def _collapse(value: str) -> str:
@@ -219,10 +222,12 @@ def _clean(nodes: tuple[Inline, ...], *, flatten: bool, in_link: bool) -> list[I
                     _clean(children, flatten=flatten, in_link=in_link or isinstance(node, Link))
                 )
                 lead, inner, trail = _hoist_whitespace(inner)
-                out.append(Text(lead))
+                if lead:
+                    out.append(Text(lead))
                 if inner or isinstance(node, Link):
                     out.append(replace(node, children=tuple(inner)))
-                out.append(Text(trail))
+                if trail:
+                    out.append(Text(trail))
             case FootnoteRef():
                 out.append(node)
     return out
@@ -272,8 +277,15 @@ def _line_start_escapes(s: str, *, continuation: bool) -> int | None:
     """Index of the character that must be escaped so `s` cannot open a block construct.
 
     `continuation` lines (after a hard break) can also become a setext underline or a
-    table delimiter row, so their leading `-`, `=`, `:` and `|` are escaped too.
+    table delimiter row, so their leading `-`, `=`, `:` and `|` are escaped too. Leading
+    spaces do not protect a line (parsers ignore up to three), so they are skipped.
     """
+    stripped = s.lstrip(" ")
+    index = _block_opener_index(stripped, continuation=continuation)
+    return None if index is None else index + len(s) - len(stripped)
+
+
+def _block_opener_index(s: str, *, continuation: bool) -> int | None:
     if not s:
         return None
     first = s[0]
@@ -371,8 +383,10 @@ class _Seg:
 
     text: str
     emph: str | None = None  # "*" or "**" while unresolved
-    inner_starts_delim: bool = False
-    inner_ends_delim: bool = False
+    # Whether there is emphasis anywhere inside. Nested emphasis interacts with the
+    # delimiter-run rules in ways parsers resolve differently ("***x***", "*a *b* c*"),
+    # so only innermost emphasis uses `*` delimiters; outer levels use HTML tags.
+    inner_has_emph: bool = False
     md_delim: bool = False  # resolved emphasis written with * delimiters
 
     @property
@@ -387,8 +401,7 @@ class _Seg:
 @dataclass(frozen=True, slots=True)
 class _Rendered:
     text: str
-    starts_delim: bool
-    ends_delim: bool
+    has_emph: bool = False  # emphasis anywhere in the text
 
 
 class _InlineRenderer:
@@ -437,11 +450,11 @@ class _InlineRenderer:
                     dest = _link_destination(href, table=self.table)
                     if title:
                         dest += " " + _link_title(title, table=self.table)
-                    segs.append(_Seg(f"[{inner.text}]({dest})"))
+                    segs.append(_Seg(f"[{inner.text}]({dest})", inner_has_emph=inner.has_emph))
                 case Emph(children) | Strong(children):
                     delim = "*" if isinstance(node, Emph) else "**"
                     inner = self.inline_child(children, prev="*")
-                    segs.append(_Seg(inner.text, delim, inner.starts_delim, inner.ends_delim))
+                    segs.append(_Seg(inner.text, delim, inner.has_emph))
             after_fnref = isinstance(node, FootnoteRef)
             at_line_start = self.line_starts and isinstance(node, LineBreak)
             continuation = continuation or isinstance(node, LineBreak)
@@ -457,7 +470,7 @@ class _InlineRenderer:
         for i, seg in enumerate(segs):
             if seg.emph is None:
                 out.append(seg.text)
-                prev_md = False
+                prev_md = prev_md and not seg.text  # empty segments keep runs adjacent
                 continue
             before = out[-1][-1] if out and out[-1] else prev
             after = segs[i + 1].first if i + 1 < len(segs) else None
@@ -466,17 +479,16 @@ class _InlineRenderer:
                 not _is_punct(first) or _is_ws(before) or _is_punct(before)
             )
             closes = not _is_ws(last) and (not _is_punct(last) or _is_ws(after) or _is_punct(after))
-            clash = seg.inner_starts_delim or seg.inner_ends_delim or prev_md
-            seg.md_delim = opens and closes and not clash
+            # Adjacent delimiter runs ("*a***b**") would merge into one run.
+            seg.md_delim = opens and closes and not seg.inner_has_emph and not prev_md
             if seg.md_delim:
                 out.append(f"{seg.emph}{seg.text}{seg.emph}")
             else:
                 tag = "em" if seg.emph == "*" else "strong"
                 out.append(f"<{tag}>{seg.text}</{tag}>")
             prev_md = seg.md_delim
-        starts = bool(segs) and segs[0].md_delim
-        ends = bool(segs) and segs[-1].md_delim
-        return _Rendered("".join(out), starts, ends)
+        has_emph = any(s.emph is not None or s.inner_has_emph for s in segs)
+        return _Rendered("".join(out), has_emph)
 
 
 def _footnote_label(key: str) -> str:
@@ -508,9 +520,12 @@ def _indent(text: str, first: str, rest: str) -> str:
 
 
 def _needs_separator(prev: Block, block: Block) -> bool:
-    if isinstance(prev, ListBlock) and isinstance(block, ListBlock):
-        return prev.ordered == block.ordered
-    return isinstance(prev, BlockQuote) and isinstance(block, BlockQuote)
+    # Only lists merge across a blank line; block quotes are already separated by one.
+    return (
+        isinstance(prev, ListBlock)
+        and isinstance(block, ListBlock)
+        and prev.ordered == block.ordered
+    )
 
 
 class _Writer:
@@ -532,6 +547,16 @@ class _Writer:
         parts.append(self.blocks(body))
         parts.extend(self.footnote_def(d) for d in notes)
         markdown = "\n\n".join(p for p in parts if p)
+        invalid = len(_SURROGATES.findall(markdown))
+        if invalid:  # lone UTF-16 halves cannot be written as UTF-8 (M01)
+            markdown = _SURROGATES.sub(_REPLACEMENT, markdown)
+            self.diagnostics.append(
+                Diagnostic(
+                    codes.TEXT_INVALID_UNICODE,
+                    "warning",
+                    f"{invalid} invalid character(s) replaced by U+FFFD.",
+                )
+            )
 
         diagnostics = self.doc.diagnostics + tuple(self.diagnostics)
         front = _front_matter(self.doc.meta, len(diagnostics))
@@ -623,7 +648,12 @@ class _Writer:
         return _indent(content, label + " ", _FOOTNOTE_INDENT) if content else label
 
     def caption(self, caption: tuple[Inline, ...]) -> str:
-        return self.paragraph((Emph(caption),)) if caption else ""
+        # Emphasis inside an italic caption would nest; it is unwrapped instead. A caption
+        # set entirely in bold is unwrapped too: the italics already mark it as a caption.
+        inner = unwrap_emphasis(caption)
+        if len(inner) == 1 and isinstance(inner[0], Strong):
+            inner = inner[0].children
+        return self.paragraph((Emph(inner),)) if caption else ""
 
     def image(self, image: Image) -> str:
         caption = self.caption(image.caption)

@@ -1,0 +1,6 @@
+source: "https://en.wikipedia.org/wiki/Maxwell%27s_equations (revision 1378299675, CC BY-SA 4.0)"
+revision_id: 1378299675
+excerpt: "Charge conservation; reference list pruned to cited notes"
+phenomena: [block_math, lang_en]
+known_limits:
+  - "Images are not downloaded (ADR-013): captions only"

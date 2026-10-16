@@ -1,0 +1,6 @@
+source: "https://en.wikipedia.org/wiki/Python_%28programming_language%29 (revision 1379911005, CC BY-SA 4.0)"
+revision_id: 1379911005
+excerpt: "Code examples; reference list pruned to cited notes"
+phenomena: [code_blocks, lang_en]
+known_limits:
+  - "Images are not downloaded (ADR-013): captions only"

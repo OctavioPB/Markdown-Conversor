@@ -143,3 +143,105 @@ el 2026-10-15.
 **Consecuencias:** Un emisor YAML propio, pequeño pero que hay que mantener correcto (se
 valida con PyYAML en tests). `<!-- -->` y `<br>` añaden HTML mínimo a la salida. Bajar todos
 los niveles cuando hay varios H1 puede llevar libros muy anidados a H6 y aplanar niveles.
+
+## ADR-012 — lxml para HTML/XML; rapidfuzz para evaluación
+**Estado:** Aceptada
+**Contexto:** Los lectores EPUB y Wikipedia necesitan un árbol HTML/XML. El XHTML de los
+EPUB suele estar mal formado (entidades como `&nbsp;` sin DTD) y el HTML de Parsoid es
+HTML5. La evaluación del corpus necesita distancia de Levenshtein rápida. Licencias
+verificadas el 2026-10-16.
+**Decisión:** `lxml` (BSD-3) como dependencia de ejecución para XML (OPF, container) y
+HTML, configurado siempre con `resolve_entities=False` y `no_network=True` (sin XXE ni red).
+`rapidfuzz` (MIT) solo como dependencia de desarrollo para `scripts/eval_corpus.py`. El
+cliente HTTP de Wikipedia usa `urllib` de la biblioteca estándar.
+**Alternativas consideradas:**
+- `ebooklib`: AGPL-3.0.
+- Solo biblioteca estándar: `xml.etree` falla con entidades no declaradas y `html.parser`
+  no construye árbol.
+- BeautifulSoup: capa extra sobre lxml sin ganancia para un mapeo por handlers.
+- `httpx`/`requests`: nada que aporten a peticiones secuenciales con límite de tasa.
+**Consecuencias:** Extensión en C: depende de que existan wheels para cada plataforma.
+Un parser más potente de lo necesario, con superficie de ataque que hay que acotar por
+configuración.
+
+## ADR-013 — Wikipedia: REST API del núcleo, fijada por revisión
+**Estado:** Aceptada (seguimiento de ADR-004; verificado el 2026-10-16)
+**Contexto:** RESTBase (`/api/rest_v1/page/html/…`) está en proceso de deprecación y su
+sustituto es la REST API del núcleo (`/w/rest.php/v1/…`), que sirve HTML de Parsoid
+conforme a Specs/HTML. Los endpoints nuevos tienen TTL de caché bajo y sin purga.
+**Decisión:** `GET /w/rest.php/v1/page/{título}/bare` para obtener la última revisión y
+`GET /w/rest.php/v1/revision/{id}/html` para el contenido. Con `--revision N` se omite la
+primera petición. Peticiones secuenciales, ≤ 1/s, con User-Agent identificable, respeto
+de `429`/`Retry-After` y reintentos acotados. Las imágenes (servidas por
+`upload.wikimedia.org`, fuera de la API) no se descargan: se conserva el pie y se emite
+`image.dropped` (info).
+**Alternativas consideradas:**
+- RESTBase: en deprecación.
+- `page/{título}/with_html` en una sola petición: no garantiza poder reproducir la misma
+  revisión más tarde ni que contenido y `revision_id` correspondan.
+**Consecuencias:** Dos peticiones por artículo. Si el HTML por revisión difiriera del de
+página, los fixtures grabados lo mostrarán. Los artículos convertidos no llevan imágenes.
+
+## ADR-014 — PDF: pypdfium2 para extracción y Pillow para imágenes
+**Estado:** Aceptada (verificado el 2026-10-16)
+**Contexto:** El backend `heuristic` (ADR-005) necesita caracteres con caja, fuente,
+tamaño y peso; la Fase 5 extrae imágenes y la Fase 6 renderiza páginas para OCR. Volumen
+de miles de PDF con < 4 GB por worker.
+**Decisión:** `pypdfium2` (Apache-2.0 / BSD-3, binding de PDFium) para abrir, extraer
+caracteres y renderizar. `Pillow` (HPND) para codificar como PNG las imágenes que no sean
+JPEG (los JPEG se copian byte a byte).
+**Alternativas consideradas:**
+- `pdfplumber`/`pdfminer.six` (MIT): Python puro, ~10× más lento y con más memoria por
+  página; inviable para lotes de miles.
+- PyMuPDF: AGPL-3.0 (ver CLAUDE.md y ADR-005).
+**Consecuencias:** Tamaño, peso y nombre de fuente por carácter solo están en la API de
+bajo nivel de PDFium (una llamada por carácter): más código propio y coste de llamadas
+ctypes. El árbol de estructura (*tagged PDF*) también requiere la API de bajo nivel.
+
+## ADR-015 — Corpus PDF/Wikipedia, docling opcional y guiones sin diccionario
+**Estado:** Aceptada
+**Contexto:** Curar `expected.md` es el cuello de botella (ADR-007) y la skill
+`golden-corpus` prohíbe redactarlos a partir de la salida del conversor. La Fase 5 exige
+un benchmark contra docling, que arrastra PyTorch y modelos de varios GB.
+**Decisión:**
+1. Corpus PDF mixto: PDFs sintéticos generados con `reportlab` (BSD, solo desarrollo),
+   cuyo `expected.md` sale del mismo contenido que los genera, más extractos de 1–2
+   páginas de PDFs reales con licencia CC BY.
+2. Para Wikipedia, Pandoc (vía `pypandoc-binary`, solo desarrollo; GPL, nunca enlazado
+   ni distribuido con tomd) como oráculo independiente para redactar borradores, que se
+   adaptan a mano al dialecto. Extractos de una sección por caso.
+3. Todos los borradores llevan `# DRAFT` hasta la revisión humana.
+4. docling como extra opcional `tomd[docling]`, solo para el benchmark; el backend por
+   defecto sigue siendo `heuristic` hasta el ADR del benchmark.
+5. Guiones de corte sin diccionario: se unen si la línea siguiente empieza en minúscula,
+   se conservan en otro caso, y la confianza baja. Diccionarios Hunspell, en un ADR futuro.
+**Alternativas consideradas:** transcripción manual pura (lenta y propensa a errores);
+docling siempre instalado (entorno de desarrollo de varios GB para todos); Hunspell ya
+(es_ES tri-licencia GPL/LGPL/MPL, a evaluar aparte).
+**Consecuencias:** Los sintéticos no capturan las rarezas de generadores reales (fuentes
+sin ToUnicode, kerning extremo); por eso se combinan con PDFs reales. Sin diccionario,
+compuestos con guion que caen a final de línea pueden perder el guion
+(`socio-económico` → `socioeconómico` solo si la siguiente línea empieza en minúscula).
+
+## ADR-016 — Backend PDF por defecto: `heuristic`; `docling` opcional por documento
+**Estado:** Propuesta (resuelve ADR-005 cuando se acepte)
+**Contexto:** Benchmark de la Fase 5 (`scripts/benchmark_pdf_backends.py`, informe en
+`docs/benchmarks/2026-10-16-pdf-backends.md`). En los 6 PDFs sintéticos del corpus ambos
+backends alcanzan similitud ≥ 0.97, F1 de títulos 1.0 y orden de lectura 1.0 (docling tras
+aplicar la misma regla de numeración de títulos). En PDFs reales de 9–22 páginas:
+`heuristic` 0.07–0.27 s/página y 50–500 MB de pico; `docling` 1.4–2.8 s/página y
+1.8–2.1 GB de pico, dentro del presupuesto de 4 GB por worker pero 10–20× más lento.
+**Decisión:** `heuristic` es el backend por defecto; `docling` queda como extra opcional
+(`tomd[docling]`) seleccionable con `--backend docling` para documentos que el heurístico
+resuelve mal (tablas sin líneas, maquetación muy irregular).
+**Alternativas consideradas:**
+- `docling` por defecto: en un lote de miles de PDF de ~20 páginas supone del orden de
+  30 s por documento frente a 2 s, y ~2 GB por worker deja sitio para un solo worker junto
+  al modelo local (< 8 GB en total).
+- Selección automática por documento (heurístico y, si los diagnósticos son malos,
+  docling): atractiva, pero sin corpus real revisado no hay datos para fijar el criterio.
+**Consecuencias:** Las tablas sin rejilla de líneas (§9.2) y las maquetaciones irregulares
+dependen de usar `--backend docling` a mano. **Pendiente para aceptar:** el corpus
+sintético favorece al heurístico (fuentes limpias, maquetación regular); hace falta
+repetir el benchmark de calidad sobre PDFs reales de dos columnas con `expected.md`
+revisado antes de pasar este ADR a Aceptada.

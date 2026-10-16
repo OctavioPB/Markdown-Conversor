@@ -1,0 +1,6 @@
+source: "https://es.wikipedia.org/wiki/Madrid (revision 175838111, CC BY-SA 4.0)"
+revision_id: 175838111
+excerpt: "Demografía; reference list pruned to cited notes"
+phenomena: [simple_tables, references, lang_es]
+known_limits:
+  - "Images are not downloaded (ADR-013): captions only"

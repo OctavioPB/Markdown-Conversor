@@ -1,0 +1,6 @@
+source: "https://en.wikipedia.org/wiki/Electromagnetic_spectrum (revision 1378728313, CC BY-SA 4.0)"
+revision_id: 1378728313
+excerpt: "Regions; reference list pruned to cited notes"
+phenomena: [table_spans, html_table_fallback, lang_en]
+known_limits:
+  - "Images are not downloaded (ADR-013): captions only"

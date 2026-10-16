@@ -233,3 +233,55 @@ def test_block_tree_survives_markdown_roundtrip(document: Document) -> None:
 @given(documents)
 def test_block_tree_survives_markdown_roundtrip_thorough(document: Document) -> None:
     _check_roundtrip(document)
+
+
+# --- Nested emphasis keeps its structure ----------------------------------------------
+
+emph_words = st.text(alphabet=st.sampled_from([*"ab*_ .,(!", NBSP]), min_size=1, max_size=5)
+emph_trees = st.recursive(
+    emph_words.map(Text),
+    lambda inner: st.one_of(
+        st.lists(inner, min_size=1, max_size=3).map(lambda c: Emph(tuple(c))),
+        st.lists(inner, min_size=1, max_size=3).map(lambda c: Strong(tuple(c))),
+    ),
+    max_leaves=6,
+)
+
+
+def _shape_ir(nodes: tuple[Inline, ...]) -> str:
+    out = []
+    for n in nodes:
+        if isinstance(n, Text):
+            out.append(n.value)
+        elif isinstance(n, Emph):
+            out.append(f"<em>{_shape_ir(n.children)}</em>")
+        elif isinstance(n, Strong):
+            out.append(f"<strong>{_shape_ir(n.children)}</strong>")
+    return "".join(out)
+
+
+def _shape_tokens(markdown: str) -> str:
+    tags = {"em_open": "<em>", "em_close": "</em>", "strong_open": "<strong>"}
+    tags["strong_close"] = "</strong>"
+    for tok in parse(markdown):
+        if tok.type == "inline" and tok.children:
+            parts = []
+            for c in tok.children:
+                if c.type in tags:
+                    parts.append(tags[c.type])
+                elif c.type in ("text", "html_inline"):
+                    parts.append(c.content)
+            shape = "".join(parts)
+    return shape
+
+
+@PROPERTY
+@given(st.lists(emph_trees, min_size=1, max_size=3))
+def test_M09_nested_emphasis_keeps_structure(nodes: list[Inline]) -> None:
+    from tomd.writers.markdown import _prepare
+
+    prepared = _prepare(tuple(nodes), flatten=False)
+    if not prepared:
+        return
+    out = convert(doc(Paragraph(tuple(nodes)))).text
+    assert _shape_tokens(out) == _shape_ir(prepared), out

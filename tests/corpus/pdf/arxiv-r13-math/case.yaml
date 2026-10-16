@@ -1,0 +1,7 @@
+source: "arXiv:2501.14108v3 (Lewintan, Theisen, Torrilhon), page 1, CC BY 4.0"
+phenomena: [single_column, math_heavy, run_in_headings, footnotes, lang_en]
+known_limits:
+  - "Hyphenated compounds split at line ends lose the hyphen without a dictionary (ADR-015)"
+  - "Formulas are not recovered from PDF: expected writes them as plain text"
+  - "SIAM run-in heading '1. Introduction.' is expected as a heading"
+  - "Single-page excerpt: 8 pt small print (abstract, notes) outweighs the 10 pt body, so the body size is misestimated and short body lines look like headings; on the full paper S = 10"
