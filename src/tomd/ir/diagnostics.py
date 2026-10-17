@@ -38,6 +38,16 @@ HTML_UNKNOWN_ELEMENT = "html.unknown_element"
 HTML_DEFINITION_LIST_FLATTENED = "html.definition_list_flattened"
 WIKI_INFOBOX_FLATTENED = "wiki.infobox_flattened"
 WIKI_TEMPLATE_DROPPED = "wiki.template_dropped"
+# EPUB
+EPUB_FIXED_LAYOUT = "epub.fixed_layout"
+EPUB_MISSING_RESOURCE = "epub.missing_resource"
+EPUB_HEADING_INFERRED = "epub.heading_inferred"
+EPUB_INTERNAL_LINK_DROPPED = "epub.internal_link_dropped"
+EPUB_COVER_SKIPPED = "epub.cover_skipped"
+EPUB_TOC_SKIPPED = "epub.toc_skipped"
+EPUB_BOILERPLATE_DROPPED = "epub.boilerplate_dropped"
+EPUB_PAGE_MARKERS_DROPPED = "epub.page_markers_dropped"
+EPUB_NOTES_HEADING_DROPPED = "epub.notes_heading_dropped"
 # PDF
 PDF_PAGE_UNREADABLE = "pdf.page_unreadable"
 PDF_PAGE_EMPTY = "pdf.page_empty"
@@ -152,6 +162,57 @@ CATALOG: dict[str, CodeInfo] = {
     WIKI_TEMPLATE_DROPPED: CodeInfo(
         "info",
         "Navigation and maintenance templates (navboxes, hatnotes, edit links) were removed.",
+        "",
+    ),
+    EPUB_FIXED_LAYOUT: CodeInfo(
+        "warning",
+        "The EPUB has a fixed layout (pre-paginated: comics, picture books, magazines); its "
+        "text is converted, but its meaning may depend on the page design.",
+        "Check the output against the book; a PDF edition may convert better.",
+    ),
+    EPUB_MISSING_RESOURCE: CodeInfo(
+        "warning",
+        "A content document listed in the spine is missing from the EPUB or damaged; its "
+        "text is missing. The rest of the book was converted.",
+        "The EPUB is damaged: obtain a fresh copy.",
+    ),
+    EPUB_HEADING_INFERRED: CodeInfo(
+        "info",
+        "Headings were inferred from the table of contents or from CSS class names, because "
+        "the book does not mark them with <h1>-<h6>.",
+        "",
+    ),
+    EPUB_INTERNAL_LINK_DROPPED: CodeInfo(
+        "info",
+        "Links between parts of the book point to places that do not exist in a single "
+        "Markdown file; their text was kept, the link removed.",
+        "",
+    ),
+    EPUB_COVER_SKIPPED: CodeInfo(
+        "info",
+        "The cover page (only the cover image) was left out of the text.",
+        "",
+    ),
+    EPUB_TOC_SKIPPED: CodeInfo(
+        "info",
+        "A table of contents (its own page, or typed into the text) or a list of "
+        "illustrations was left out: its links lead nowhere in Markdown, and the headings "
+        "carry the structure.",
+        "",
+    ),
+    EPUB_BOILERPLATE_DROPPED: CodeInfo(
+        "info",
+        "Distributor boilerplate (e.g. the Project Gutenberg header and license) was removed.",
+        "",
+    ),
+    EPUB_PAGE_MARKERS_DROPPED: CodeInfo(
+        "info",
+        "Print page-break markers (page numbers of the paper edition) were removed.",
+        "",
+    ),
+    EPUB_NOTES_HEADING_DROPPED: CodeInfo(
+        "info",
+        "A notes section became Markdown footnotes; its now-empty heading was removed.",
         "",
     ),
     PDF_PAGE_UNREADABLE: CodeInfo(

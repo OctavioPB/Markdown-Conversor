@@ -115,10 +115,18 @@ registro de *handlers* por selector, sin bifurcar el mapeo base.
 ## 6. Pipeline y lotes
 
 - `pipeline.dispatch` elige el lector por extensión, tipo MIME o forma de URL.
-- `pipeline.batch` usa un pool de procesos. Cada worker convierte un documento con timeout
-  y límite de memoria (`resource.setrlimit`), y escribe el resultado de forma atómica
-  (archivo temporal + rename).
-- El manifiesto SQLite (ADR-008) es la única fuente de verdad del estado del lote.
+- `pipeline.batch` usa un pool de procesos persistentes (1 por defecto). Cada worker
+  convierte un documento cada vez, con límite de memoria propio (`pipeline.limits`: un Job
+  Object en Windows, `RLIMIT_AS` en Linux y macOS) y con un timeout que vigila el proceso
+  padre. Un worker que agota el tiempo, la memoria o muere se sustituye; su documento queda
+  como `timeout`, `memory` o `crashed`, y el lote sigue. Cada worker se renueva tras 50
+  documentos.
+- El proceso padre es el único que escribe: el manifiesto y los archivos de salida, de
+  forma atómica (archivo temporal + rename). El worker pregunta al padre el nombre final
+  antes de escribir el Markdown, porque los enlaces a imágenes llevan ese nombre.
+- El manifiesto SQLite (ADR-008) es la única fuente de verdad del estado del lote: clave
+  (sha256, versión), estado, salida, error, duración, memoria pico, diagnósticos por código.
+  Lo que quedó `running` tras una interrupción vuelve a `pending` al reanudar.
 
 ## 7. Disposición de la salida
 
@@ -130,5 +138,7 @@ out/
   report.md            # resumen del lote: estados, diagnósticos más frecuentes, lentos
 ```
 
-El `<slug>` deriva del título normalizado, con desambiguación por prefijo de hash si
-colisiona. Es determinista.
+El `<slug>` deriva del título normalizado. Si otro documento del lote ya tiene ese nombre,
+se añade el prefijo de su hash (`<slug>-<sha8>`); el manifiesto lo registra, así que el
+nombre de un documento no cambia entre ejecuciones. Dos copias idénticas (mismo hash en
+rutas distintas) se convierten una sola vez.

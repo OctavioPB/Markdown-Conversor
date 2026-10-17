@@ -9,7 +9,8 @@ from pathlib import Path
 
 from tomd import __version__
 from tomd.errors import UnsupportedSourceError
-from tomd.ir import Diagnostic, Document
+from tomd.ir import Asset, Diagnostic, Document
+from tomd.readers.epub.reader import EpubReader
 from tomd.readers.pdf.ocr import OcrMode
 from tomd.readers.pdf.reader import DEFAULT_BACKEND, PdfReader
 from tomd.readers.wikipedia.client import parse_article_ref
@@ -26,6 +27,7 @@ _SLUG_MAX = 80
 class ConversionResult:
     markdown_path: Path
     diagnostics: tuple[Diagnostic, ...]
+    document: Document | None = None  # the transformed IR the Markdown was written from
 
 
 def read_source(
@@ -49,10 +51,10 @@ def read_source(
         if suffix == ".pdf":
             return PdfReader(backend=pdf_backend, ocr=ocr).read(source)
         if suffix == ".epub":
-            raise UnsupportedSourceError(f"{source}: EPUB is not supported yet (PLAN.md, phase 2).")
+            return EpubReader().read(source)
         raise UnsupportedSourceError(
-            f"{source}: unsupported file type {suffix or '(none)'!r}; tomd converts .pdf "
-            "files, Wikipedia Parsoid .html files and Wikipedia articles."
+            f"{source}: unsupported file type {suffix or '(none)'!r}; tomd converts .pdf and "
+            ".epub files, Wikipedia Parsoid .html files and Wikipedia articles."
         )
     try:
         parse_article_ref(source)
@@ -64,12 +66,31 @@ def read_source(
     return WikipediaReader(revision=revision).read(source)
 
 
-def render_document(doc: Document) -> tuple[str, RenderResult, Document]:
-    """Apply transforms and render. Returns (slug, result, transformed document)."""
+def prepare_document(doc: Document) -> tuple[str, Document]:
+    """Stamp the converter version and apply the transforms. Returns the slug the title
+    suggests and the document ready to render."""
     doc = replace(doc, meta=replace(doc.meta, converter_version=__version__))
     doc = apply_default_transforms(doc)
-    slug = slugify(doc.meta.title or Path(doc.meta.source).stem or "document")
+    return slugify(doc.meta.title or Path(doc.meta.source).stem or "document"), doc
+
+
+def render_document(doc: Document) -> tuple[str, RenderResult, Document]:
+    """Apply transforms and render. Returns (slug, result, transformed document)."""
+    slug, doc = prepare_document(doc)
     return slug, render_markdown(doc, slug=slug), doc
+
+
+def write_output(out_dir: Path, slug: str, text: str, assets: tuple[Asset, ...]) -> Path:
+    """`<slug>.md` and `<slug>.assets/`, each file written atomically."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if assets:
+        assets_dir = out_dir / f"{slug}.assets"
+        assets_dir.mkdir(exist_ok=True)
+        for asset in assets:
+            atomic_write(assets_dir / asset_filename(asset), asset.data)
+    target = out_dir / f"{slug}.md"
+    atomic_write(target, text.encode("utf-8"))
+    return target
 
 
 def convert(
@@ -82,15 +103,8 @@ def convert(
 ) -> ConversionResult:
     doc = read_source(source, revision=revision, pdf_backend=pdf_backend, ocr=ocr)
     slug, result, doc = render_document(doc)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    if doc.assets:
-        assets_dir = out_dir / f"{slug}.assets"
-        assets_dir.mkdir(exist_ok=True)
-        for asset in doc.assets:
-            _atomic_write(assets_dir / asset_filename(asset), asset.data)
-    target = out_dir / f"{slug}.md"
-    _atomic_write(target, result.text.encode("utf-8"))
-    return ConversionResult(target, result.diagnostics)
+    target = write_output(out_dir, slug, result.text, doc.assets)
+    return ConversionResult(target, result.diagnostics, doc)
 
 
 def slugify(title: str) -> str:
@@ -102,7 +116,7 @@ def slugify(title: str) -> str:
     return slug or "document"
 
 
-def _atomic_write(target: Path, data: bytes) -> None:
+def atomic_write(target: Path, data: bytes) -> None:
     fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as fh:

@@ -32,6 +32,12 @@ thresholds:                    # opcional; sustituye los de la fase
   text_similarity: 0.93
 ```
 
+Los EPUB reales (`tests/corpus/epub/se-*`, `pg-*`) son extractos de libros de dominio público
+hechos con `scripts/excerpt_epub.py` (capítulos elegidos, notas no llamadas eliminadas; a los de
+Project Gutenberg se les quitan cabecera, pie y licencia, como permiten sus términos sin la
+marca). Sus borradores salen de `scripts/draft_epub_expected.py`, con Pandoc como oráculo
+independiente; los sintéticos, de `scripts/make_synthetic_epubs.py`.
+
 Los PDF escaneados viven en `tests/corpus/pdf-ocr/` (umbral propio: similitud ≥ 0.90).
 Necesitan Tesseract (ADR-017): sus casos llevan la marca `slow` y se saltan si el motor no
 está instalado. Los cinco actuales los genera `scripts/make_synthetic_pdfs.py` rasterizando
@@ -90,6 +96,14 @@ El lector de Wikipedia se prueba con respuestas grabadas (`tests/fixtures/wiki/*
 sus cabeceras). Un fixture de pytest bloquea cualquier socket en tests, de modo que una
 llamada accidental a la red falla en lugar de pasar en silencio.
 
+## Lotes
+
+`tests/unit/test_batch.py` cubre manifiesto, idempotencia, duplicados, nombres en colisión,
+aislamiento de fallos, timeouts, límite de memoria e interrupción. `scripts/stress_batch.py`
+genera ≥ 500 entradas, mata el lote a mitad (sin cierre limpio), lo reanuda y comprueba que
+no haya duplicados, nada `running` ni `pending`, y la memoria dentro del presupuesto. Con
+`--verify <salida>` hace la misma comprobación sobre un lote real, como el del corpus privado.
+
 ## Fuzzing de entradas malformadas
 
 `scripts/fuzz_inputs.py` muta de forma determinista (por semilla) entradas del corpus y
@@ -98,6 +112,8 @@ convierte cada una en su propio subproceso, con tiempo límite:
 - **PDF:** truncado, bytes cambiados, basura insertada, xref o trailer rotos, `/Length`
   falsos, flujos comprimidos corruptos, referencias cíclicas.
 - **HTML:** truncado, UTF-8 inválido y NUL, anidamiento extremo, etiquetas sin cerrar.
+- **EPUB:** el ZIP entero truncado o con bytes cambiados, y miembros sueltos truncados,
+  corruptos, borrados o con anidamiento extremo.
 
 El contrato es que cada entrada se convierte (quizá con diagnósticos) o falla con un
 `TomdError`. Cualquier otra excepción, cuelgue, caída del proceso o memoria pico por

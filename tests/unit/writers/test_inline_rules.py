@@ -88,6 +88,15 @@ def test_M10_escaping_is_minimal() -> None:
     assert _render_para("snake_case, 3.5 - 2 + 1 # x") == "snake_case, 3.5 - 2 + 1 # x\n"
 
 
+def test_M10_dashes_followed_by_emphasis_are_not_escaped() -> None:
+    # "--*Hacer*" (a dialogue dash, Platero y yo) cannot be a list item or a rule: the
+    # line holds more than dashes. Alone, "--" is still left alone and "---" escaped.
+    out = _render_para("--", Emph((Text("Hacer"),)), " + infinitivo.")
+    assert out == "--*Hacer* + infinitivo.\n"
+    assert _tokens(out) == ["text", "em_open", "text", "em_close", "text"]  # a paragraph
+    assert _render_para("---") == "\\---\n"
+
+
 def test_M11_inline_links() -> None:
     assert _render_para(Link((Text("t"),), "https://x.org/a", "T")) == (
         '[t](https://x.org/a "T")\n'

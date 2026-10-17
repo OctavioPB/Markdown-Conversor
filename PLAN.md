@@ -31,13 +31,17 @@ IR con poco ruido; PDF va al final porque es reconstrucción, no traducción (ve
 del serializador re-parseada con `markdown-it-py` produce el mismo árbol de bloques.
 
 ## Fase 2 — Lector EPUB
-- [ ] `container.xml` → OPF → spine → XHTML en orden
-- [ ] Mapeo HTML→IR (compartido con Wikipedia; vive en `readers/html_common.py`)
-- [ ] Heurística de títulos por clases CSS cuando no hay `<h1..h6>`
-- [ ] Notas al pie entre archivos: resolución y renumeración
-- [ ] Imágenes extraídas a `assets/` con nombre por hash
-- [ ] Detección de DRM y de maquetación fija → error / diagnóstico
+- [x] `container.xml` → OPF → spine → XHTML en orden
+- [x] Mapeo HTML→IR (compartido con Wikipedia; vive en `readers/html_common.py`)
+- [x] Heurística de títulos por clases CSS cuando no hay `<h1..h6>` (y por la tabla de contenidos)
+- [x] Notas al pie entre archivos: resolución y renumeración
+- [x] Imágenes extraídas a `assets/` con nombre por hash
+- [x] Detección de DRM y de maquetación fija → error / diagnóstico
 - [ ] Corpus: ≥ 8 EPUB (Project Gutenberg y Standard Ebooks, dominio público)
+      (11 casos en `tests/corpus/epub/`: 4 Standard Ebooks y 3 Project Gutenberg recortados,
+      4 sintéticos; borradores por revisar. Los sintéticos y los de Standard Ebooks coinciden
+      con el oráculo ≥ 0.998; en `pg-marianela` y `pg-federalist-papers` la diferencia es la
+      tabla de contenidos dentro del texto, que tomd elimina y el oráculo no)
 
 **Terminado cuando:** similitud de texto ≥ 0.98 y F1 de títulos ≥ 0.95 en el corpus EPUB.
 **Al cerrar:** calibrar umbrales del resto del plan con este baseline (ADR).
@@ -96,20 +100,24 @@ precisión de orden de lectura ≥ 0.90 en el corpus de dos columnas.
 y la similitud en escaneados limpios es ≥ 0.90.
 
 ## Fase 7 — Lotes a escala (miles de PDF)
-- [ ] Manifiesto SQLite: hash de entrada, versión del conversor, estado, diagnósticos, tiempo
-- [ ] Idempotencia: saltar entradas cuyo hash y versión ya están convertidos
-- [ ] Reanudación tras interrupción sin reprocesar lo terminado
-- [ ] Pool de workers con límite de memoria por worker y timeout por documento
-- [ ] Aislamiento de fallos: un PDF corrupto no detiene el lote
-- [ ] Informe final: conteos por estado, top diagnósticos, documentos más lentos
+- [x] Manifiesto SQLite: hash de entrada, versión del conversor, estado, diagnósticos, tiempo
+- [x] Idempotencia: saltar entradas cuyo hash y versión ya están convertidos
+- [x] Reanudación tras interrupción sin reprocesar lo terminado
+- [x] Pool de workers con límite de memoria por worker y timeout por documento
+      (Job Object en Windows, `RLIMIT_AS` en Linux/macOS)
+- [x] Aislamiento de fallos: un PDF corrupto no detiene el lote
+- [x] Informe final: conteos por estado, top diagnósticos, documentos más lentos
+
+Verificado con `scripts/stress_batch.py` (520 entradas generadas, matado a mitad y
+reanudado: sin duplicados, 63 MB de pico). **Falta** la prueba de cierre sobre el corpus
+privado, que solo puede ejecutar su dueño (ver el docstring del script).
 
 **Terminado cuando:** un lote de ≥ 500 PDF del corpus privado termina, se interrumpe y se
 reanuda sin duplicados, y la memoria pico se mantiene dentro del presupuesto.
 
 ## Fase 8 — Endurecimiento
-- [ ] Fuzzing de entradas malformadas (ZIP corruptos, PDF truncados)
-      (PDF y HTML hechos: `scripts/fuzz_inputs.py`, 1 000 entradas sin hallazgos tras las
-      correcciones; falta EPUB/ZIP cuando exista el lector de la fase 2)
+- [x] Fuzzing de entradas malformadas (ZIP corruptos, PDF truncados)
+      (`scripts/fuzz_inputs.py`: PDF, HTML y EPUB/ZIP; sin hallazgos tras las correcciones)
 - [x] Revisión de diagnósticos: mensajes accionables (catálogo único con severidad, significado
       y acción; `docs/DIAGNOSTICS.md` generado; códigos de salida por tipo de error)
 - [x] README de uso y ejemplos

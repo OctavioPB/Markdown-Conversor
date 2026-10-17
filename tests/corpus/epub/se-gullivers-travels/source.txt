@@ -1,0 +1,2 @@
+https://standardebooks.org/ebooks/jonathan-swift/gullivers-travels
+Excerpt: spine 5,7,29,49, documents shortened to ~15000 characters; notes not called from the excerpt removed (scripts/excerpt_epub.py).

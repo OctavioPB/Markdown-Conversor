@@ -17,6 +17,8 @@ Los textos de cada código están en inglés, como los mensajes del programa.
 | Código | Severidad | Qué significa | Qué hacer |
 |---|---|---|---|
 | `doc.title_missing` | error | The document has no title in its metadata and no top-level heading; the output file is named after the source file. | Set a title in the source (PDF document properties) or check that the first heading was recognised. |
+| `epub.fixed_layout` | warning | The EPUB has a fixed layout (pre-paginated: comics, picture books, magazines); its text is converted, but its meaning may depend on the page design. | Check the output against the book; a PDF edition may convert better. |
+| `epub.missing_resource` | warning | A content document listed in the spine is missing from the EPUB or damaged; its text is missing. The rest of the book was converted. | The EPUB is damaged: obtain a fresh copy. |
 | `footnote.duplicate_definition` | warning | A footnote is defined more than once; the first definition was kept. | — |
 | `footnote.missing_definition` | warning | A footnote reference has no definition; the reference was dropped. | — |
 | `footnote.orphan_definition` | warning | A footnote definition is never referenced in the text; it was dropped. | — |
@@ -30,6 +32,13 @@ Los textos de cada código están en inglés, como los mensajes del programa.
 | `pdf.page_unreadable` | warning | A page could not be loaded (damaged page object); its content is missing. | Re-export the PDF from its source, or repair it (`qpdf in.pdf out.pdf`), and convert again. |
 | `pdf.reading_order_uncertain` | warning | The column layout of a page is ambiguous; paragraphs may be out of order. | Check the paragraph order of that page against the source. |
 | `text.invalid_unicode` | warning | The source contains invalid characters (broken UTF-8, lone surrogates); each was replaced by U+FFFD. | The source file is damaged: obtain a fresh copy (fetch the article again). |
+| `epub.boilerplate_dropped` | info | Distributor boilerplate (e.g. the Project Gutenberg header and license) was removed. | — |
+| `epub.cover_skipped` | info | The cover page (only the cover image) was left out of the text. | — |
+| `epub.heading_inferred` | info | Headings were inferred from the table of contents or from CSS class names, because the book does not mark them with <h1>-<h6>. | — |
+| `epub.internal_link_dropped` | info | Links between parts of the book point to places that do not exist in a single Markdown file; their text was kept, the link removed. | — |
+| `epub.notes_heading_dropped` | info | A notes section became Markdown footnotes; its now-empty heading was removed. | — |
+| `epub.page_markers_dropped` | info | Print page-break markers (page numbers of the paper edition) were removed. | — |
+| `epub.toc_skipped` | info | A table of contents (its own page, or typed into the text) or a list of illustrations was left out: its links lead nowhere in Markdown, and the headings carry the structure. | — |
 | `html.definition_list_flattened` | info | Definition lists have no Markdown syntax; terms and definitions became paragraphs. | — |
 | `html.unknown_element` | info | An HTML element tomd does not know was converted from its content (text kept, semantics lost). | — |
 | `image.skipped_small` | info | Images too small to be figures (icons, logos, decorations) were skipped. | — |

@@ -1,0 +1,2 @@
+https://standardebooks.org/ebooks/mary-shelley/frankenstein
+Excerpt: spine 4,5,7,15, documents shortened to ~15000 characters; notes not called from the excerpt removed (scripts/excerpt_epub.py).

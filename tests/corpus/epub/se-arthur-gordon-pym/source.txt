@@ -1,0 +1,2 @@
+https://standardebooks.org/ebooks/edgar-allan-poe/the-narrative-of-arthur-gordon-pym-of-nantucket
+Excerpt: spine 2,9, documents shortened to ~15000 characters; notes not called from the excerpt removed (scripts/excerpt_epub.py).

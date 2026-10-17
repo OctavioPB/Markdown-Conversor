@@ -114,3 +114,37 @@ def test_huge_scanned_page_is_read_at_a_lower_resolution(
     doc = HeuristicBackend().convert(path)
     applied = [d.message for d in doc.diagnostics if d.code == PDF_OCR_APPLIED]
     assert applied and "page too large" in applied[0]
+
+
+# --- EPUB --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["epub-container-deflate-error.epub", "epub-zip-version.epub"])
+def test_damaged_epub_archives_are_rejected(name: str) -> None:
+    # Found by scripts/fuzz_inputs.py: a corrupt deflate stream in container.xml raised
+    # zlib.error, an unknown ZIP version NotImplementedError.
+    from tomd.readers.epub.reader import read_epub
+
+    with pytest.raises(UnreadableInputError):
+        read_epub(FIXTURES / name)
+
+
+def test_a_damaged_chapter_loses_only_itself(tmp_path: Path) -> None:
+    import zipfile
+
+    from tests.unit.readers.test_epub import book
+    from tomd.readers.epub.reader import read_epub
+
+    path = book(
+        tmp_path, {"a.xhtml": "<p>First chapter.</p>", "b.xhtml": "<p>" + "x" * 4000 + "</p>"}
+    )
+    with zipfile.ZipFile(path) as archive:
+        info = archive.getinfo("OEBPS/b.xhtml")
+    data = bytearray(path.read_bytes())
+    start = info.header_offset + 30 + len(info.filename.encode()) + len(info.extra)
+    for offset in range(start + 2, start + info.compress_size - 2, 7):
+        data[offset] ^= 0xFF  # corrupt the deflate stream of b.xhtml only
+    path.write_bytes(bytes(data))
+    doc = read_epub(path)
+    assert codes.EPUB_MISSING_RESOURCE in _codes(doc)
+    assert any("First chapter." in repr(b) for b in doc.blocks)

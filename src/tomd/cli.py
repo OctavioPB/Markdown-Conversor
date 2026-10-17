@@ -25,6 +25,7 @@ EXIT_UNREADABLE = 4
 EXIT_DRM = 5
 EXIT_NOT_FOUND = 6
 EXIT_NETWORK = 7
+EXIT_INTERRUPTED = 130  # Ctrl+C (128 + SIGINT), as shells report it
 _EXIT_CODES: tuple[tuple[type[TomdError], int], ...] = (
     (UnsupportedSourceError, EXIT_UNSUPPORTED),
     (UnreadableInputError, EXIT_UNREADABLE),
@@ -41,7 +42,7 @@ def exit_code(exc: TomdError) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tomd",
-        description="Convert PDF files and Wikipedia articles to Markdown (EPUB: planned).",
+        description="Convert PDF and EPUB files and Wikipedia articles to Markdown.",
     )
     parser.add_argument("--version", action="version", version=f"tomd {__version__}")
     sub = parser.add_subparsers(dest="command")
@@ -57,6 +58,33 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["auto", "always", "never"],
         help="OCR scanned PDF pages (ADR-017): auto = only pages without usable text",
     )
+
+    batch = sub.add_parser(
+        "batch", help="convert many files, resumable, with a SQLite manifest (ADR-008)"
+    )
+    batch.add_argument(
+        "inputs", nargs="+", type=Path, help="folders, .pdf/.epub files, or .txt lists of paths"
+    )
+    batch.add_argument("-o", "--out", type=Path, default=Path("out"), help="output folder")
+    batch.add_argument("--workers", type=int, default=1, help="worker processes (default 1)")
+    batch.add_argument(
+        "--timeout", type=float, default=600.0, help="seconds per document (default 600)"
+    )
+    batch.add_argument(
+        "--memory-mb", type=int, default=4096, help="memory limit per worker (default 4096)"
+    )
+    batch.add_argument("--backend", default="heuristic", help="PDF backend (ADR-005)")
+    batch.add_argument("--ocr", default="auto", choices=["auto", "always", "never"])
+    batch.add_argument(
+        "--retry-failed", action="store_true", help="convert again documents that failed"
+    )
+    batch.add_argument(
+        "--force", action="store_true", help="convert everything again, even if done"
+    )
+
+    ui = sub.add_parser("ui", help="desktop window to convert and review documents")
+    ui.add_argument("source", nargs="?", help="document to put in the source field")
+    ui.add_argument("-o", "--out", type=Path, help="output folder (default: ./out)")
 
     debug = sub.add_parser("debug-pdf", help="SVG overlay of one PDF page at one layout stage")
     debug.add_argument("source", type=Path)
@@ -75,6 +103,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "convert":
         return _convert(args.source, args.out, args.revision, args.backend, args.ocr)
+    if args.command == "batch":
+        return _batch(args)
+    if args.command == "ui":
+        from tomd.ui.app import run
+
+        return run(args.source, args.out)
     if args.command == "debug-pdf":
         return _debug_pdf(args.source, args.page, args.stage, args.out)
     parser.print_help()
@@ -108,6 +142,28 @@ def _print_diagnostics(diagnostics: Sequence[Diagnostic]) -> None:
         info = CATALOG.get(code)
         if info and info.action and severity[code] != "info":
             print(f"          -> {info.action}", file=sys.stderr)
+
+
+def _batch(args: argparse.Namespace) -> int:
+    from tomd.pipeline.batch import BatchOptions, run_batch
+
+    options = BatchOptions(
+        out_dir=args.out,
+        workers=max(1, args.workers),
+        timeout_s=args.timeout,
+        memory_mb=args.memory_mb,
+        backend=args.backend,
+        ocr=args.ocr,
+        retry_failed=args.retry_failed,
+        force=args.force,
+    )
+    summary = run_batch(args.inputs, options)
+    if summary.report is not None:
+        print(summary.report)
+    if summary.interrupted:
+        return EXIT_INTERRUPTED
+    failed = sum(n for status, n in summary.statuses.items() if status != "done")
+    return EXIT_FAILED if failed else EXIT_OK
 
 
 def _debug_pdf(source: Path, page: int, stage: str, out: Path | None) -> int:

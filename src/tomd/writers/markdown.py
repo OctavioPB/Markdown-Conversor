@@ -274,31 +274,37 @@ _DASHES_ONLY = re.compile(r"[- ]+\Z")
 _EQUALS_ONLY = re.compile(r"[= ]+\Z")
 
 
-def _line_start_escapes(s: str, *, continuation: bool) -> int | None:
+def _line_start_escapes(s: str, *, continuation: bool, alone: bool = True) -> int | None:
     """Index of the character that must be escaped so `s` cannot open a block construct.
 
     `continuation` lines (after a hard break) can also become a setext underline or a
     table delimiter row, so their leading `-`, `=`, `:` and `|` are escaped too. Leading
     spaces do not protect a line (parsers ignore up to three), so they are skipped.
+    `alone` says whether `s` ends its line; if other inline content follows, the line
+    cannot consist only of dashes (thematic break) or equals signs (setext underline).
     """
     stripped = s.lstrip(" ")
-    index = _block_opener_index(stripped, continuation=continuation)
+    index = _block_opener_index(stripped, continuation=continuation, alone=alone)
     return None if index is None else index + len(s) - len(stripped)
 
 
-def _block_opener_index(s: str, *, continuation: bool) -> int | None:
+def _block_opener_index(s: str, *, continuation: bool, alone: bool = True) -> int | None:
     if not s:
         return None
     first = s[0]
     if first == "#" and _ATX_OPENER.match(s):
         return 0
-    if first == "-" and (continuation or len(s) == 1 or s[1] == " " or _DASHES_ONLY.match(s)):
-        return 0
+    if first == "-":
+        if continuation or (len(s) > 1 and s[1] == " "):
+            return 0  # a setext underline after a hard break; a list item "- x"
+        # An empty list item ("-") or a thematic break ("---", "- - -"), only when
+        # nothing else follows on the line.
+        return 0 if alone and _DASHES_ONLY.match(s) else None
     if first == "+" and (len(s) == 1 or s[1] == " "):
         return 0
     if first == ">":
         return 0
-    if continuation and (first in ":|" or (first == "=" and _EQUALS_ONLY.match(s))):
+    if continuation and (first in ":|" or (first == "=" and alone and bool(_EQUALS_ONLY.match(s)))):
         return 0
     m = _ORDERED_MARKER.match(s)
     if m:
@@ -424,7 +430,14 @@ class _InlineRenderer:
                 case Text(value):
                     force = None
                     if at_line_start:
-                        force = _line_start_escapes(value, continuation=continuation)
+                        # Something after this text on the same line ("--" then *x*)
+                        # rules out a line made only of dashes or equals signs.
+                        alone = (
+                            nxt_node is None
+                            or isinstance(nxt_node, LineBreak)
+                            or (isinstance(nxt_node, Text) and not nxt_node.value.strip("-= "))
+                        )
+                        force = _line_start_escapes(value, continuation=continuation, alone=alone)
                     elif after_fnref and value[:1] in ("(", ":"):
                         force = 0  # "[^1](x)" is a link, "[^1]:" a definition
                     nxt = None

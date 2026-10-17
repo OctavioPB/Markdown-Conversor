@@ -15,6 +15,7 @@ the worker budget (CLAUDE.md: about 4 GB). Mutations are deterministic for a giv
 """
 
 import argparse
+import io
 import json
 import random
 import re
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -34,6 +36,8 @@ SEEDS = [
     *sorted((CORPUS / "pdf").glob("synthetic-*/input.pdf")),
     CORPUS / "pdf" / "emnlp-2023-main-1" / "input.pdf",
     *sorted((CORPUS / "wikipedia").glob("*/input.html"))[:3],
+    *sorted((CORPUS / "epub").glob("synthetic-*/input.epub")),
+    CORPUS / "epub" / "se-frankenstein" / "input.epub",
 ]
 MEMORY_BUDGET_MB = 4096
 TIMEOUT_S = 60.0
@@ -122,6 +126,50 @@ def html_unclosed(data: bytes, rng: random.Random) -> bytes:
     )
 
 
+def _rezip(data: bytes, rng: random.Random, change: Callable[[str, bytes], bytes | None]) -> bytes:
+    """Apply `change` to one member of a ZIP (None deletes it); raw bytes if not a ZIP."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as src:
+            members = [(i.filename, src.read(i)) for i in src.infolist()]
+    except (zipfile.BadZipFile, OSError, EOFError, RuntimeError):
+        return flip_bytes(data, rng)
+    target = rng.choice([name for name, _ in members if name != "mimetype"] or ["mimetype"])
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for name, content in members:
+            new = change(name, content) if name == target else content
+            if new is not None:
+                dst.writestr(name, new)
+    return out.getvalue()
+
+
+def zip_member_truncated(data: bytes, rng: random.Random) -> bytes:
+    return _rezip(data, rng, lambda _, b: b[: rng.randrange(0, len(b) + 1)])
+
+
+def zip_member_garbled(data: bytes, rng: random.Random) -> bytes:
+    return _rezip(data, rng, lambda _, b: flip_bytes(b, rng) if b else rng.randbytes(64))
+
+
+def zip_member_deleted(data: bytes, rng: random.Random) -> bytes:
+    return _rezip(data, rng, lambda _, b: None)
+
+
+def zip_member_nested(data: bytes, rng: random.Random) -> bytes:
+    """Deeply nested markup or a huge attribute in one XML member."""
+    payload = rng.choice([b"<div>" * 50_000, b'<p class="' + b"x" * 1_000_000 + b'">'])
+    return _rezip(data, rng, lambda _, b: b.replace(b"<body", payload + b"<body", 1))
+
+
+EPUB_MUTATIONS: list[Mutation] = [
+    truncate,
+    flip_bytes,
+    drop_chunk,
+    zip_member_truncated,
+    zip_member_garbled,
+    zip_member_deleted,
+    zip_member_nested,
+]
 PDF_MUTATIONS: list[Mutation] = [
     truncate,
     flip_bytes,
@@ -234,8 +282,10 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="tomd-fuzz-") as tmp:
         for i in range(args.iterations):
             seed_path = SEEDS[i % len(SEEDS)]
-            is_pdf = seed_path.suffix == ".pdf"
-            mutation = rng.choice(PDF_MUTATIONS if is_pdf else HTML_MUTATIONS)
+            mutations = {".pdf": PDF_MUTATIONS, ".epub": EPUB_MUTATIONS}.get(
+                seed_path.suffix, HTML_MUTATIONS
+            )
+            mutation = rng.choice(mutations)
             data = mutation(seed_path.read_bytes(), rng)
             name = f"{i:04d}-{seed_path.parent.name}-{mutation.__name__}{seed_path.suffix}"
             path = Path(tmp) / name

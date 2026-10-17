@@ -1,12 +1,11 @@
 # tomd
 
-Conversor local de **PDF** y **artículos de Wikipedia** a Markdown limpio y determinista,
+Conversor local de **PDF**, **EPUB** y **artículos de Wikipedia** a Markdown limpio y determinista,
 pensado para alimentar una biblioteca que consume un sistema de IA local (búsqueda,
 tutoría, redacción). La misma entrada con la misma versión produce siempre los mismos
 bytes, y toda pérdida de información queda registrada como un diagnóstico.
 
-> **Estado:** pre-1.0. EPUB aún no está implementado (PLAN.md, fase 2), ni la conversión
-> por lotes (fase 7). Ver [Limitaciones](#limitaciones).
+> **Estado:** pre-1.0. Ver [Limitaciones](#limitaciones).
 
 ## Instalación
 
@@ -54,6 +53,9 @@ docling`). Es más lento y usa unos 2 GB de memoria; ver
 # PDF digital o escaneado
 uv run tomd convert articulo.pdf -o out/
 
+# EPUB 2 o 3 (sin DRM): capítulos en el orden del libro, notas como notas al pie
+uv run tomd convert libro.epub -o out/
+
 # Artículo de Wikipedia: URL, o idioma:Título, opcionalmente fijando la revisión
 uv run tomd convert https://es.wikipedia.org/wiki/Teorema_de_Pitágoras -o out/
 uv run tomd convert "en:Maxwell's equations" --revision 1378299675 -o out/
@@ -62,9 +64,58 @@ uv run tomd convert "en:Maxwell's equations" --revision 1378299675 -o out/
 # todas (texto digital ilegible); never lo desactiva
 uv run tomd convert escaneo.pdf --ocr always -o out/
 
+# Lote reanudable: carpetas, archivos o listas .txt de rutas (ver «Lotes»)
+uv run tomd batch biblioteca/ -o out/
+
 # Depurar la maquetación de una página: SVG con líneas, bloques, orden o clasificación
 uv run tomd debug-pdf articulo.pdf --page 3 --stage order
 ```
+
+### Lotes
+
+```bash
+uv run tomd batch biblioteca/ otra-carpeta/ lista.txt -o out/ --workers 1 --timeout 600
+```
+
+- **Qué convierte:** carpetas (recursivo, `.pdf` y `.epub`), archivos sueltos y listas
+  `.txt` con una ruta por línea.
+- **Manifiesto:** el estado de cada documento queda en `out/manifest.sqlite`, con clave
+  (hash del archivo, versión de tomd).
+  - Repetir la orden solo convierte lo nuevo o lo pendiente.
+  - Tras una interrupción (Ctrl+C, un corte) se reanuda donde se quedó.
+  - Una copia idéntica en otra ruta no se convierte dos veces.
+- **Aislamiento:** cada documento se convierte en un worker con límite de memoria
+  (`--memory-mb`, 4096 por defecto) y tiempo máximo (`--timeout`). Un archivo dañado, que
+  se cuelga o que agota la memoria queda registrado y el lote sigue. `--retry-failed`
+  reintenta los fallidos y `--force` reconvierte todo.
+- **Informe:** `out/report.md` resume estados, diagnósticos más frecuentes, documentos más
+  lentos y fallos.
+- **Workers:** `--workers 1` por defecto, porque la máquina se comparte con el modelo
+  local; súbelo cuando haya memoria libre (unos 4 GB por worker en el peor caso).
+- **Salida de la orden:** 0 si todo se convirtió, 1 si hubo fallos (ver el informe),
+  130 si se interrumpió.
+
+### Interfaz de escritorio
+
+```bash
+uv run tomd ui                    # ventana para convertir y revisar
+uv run tomd ui articulo.pdf       # con el origen ya rellenado
+```
+
+Una ventana local (Tkinter, sin navegador ni servidor) para convertir y revisar:
+
+- **Barra superior:** origen (archivo o artículo de Wikipedia), revisión, backend, modo
+  OCR y carpeta de salida. Ctrl+O abre un archivo y Ctrl+Enter convierte.
+- **Original:** la página del PDF, con zoom (Ctrl+rueda) y paso de página (Re Pág/Av Pág).
+  Se resalta el bloque o el diagnóstico seleccionado.
+- **Markdown:** el archivo generado, de solo lectura y con búsqueda (Ctrl+F), y una vista
+  previa formateada. Al hacer clic en una línea se muestra su bloque en el original; al
+  pasar de página, el Markdown la sigue (casilla «Sincronizar»).
+- **Diagnósticos:** al seleccionar uno se va a su página y se muestra qué hacer.
+
+Cada conversión se ejecuta en un proceso aparte: la ventana no se bloquea, se puede
+cancelar y un fallo nativo no la cierra. «Revisar .md existente…» abre una salida anterior
+(sin diagnósticos ni vista previa, que no se guardan en el archivo).
 
 `tomd convert` imprime la ruta del Markdown y, por la salida de error, un resumen de
 diagnósticos con la acción recomendada cuando hay algo que hacer:
@@ -116,7 +167,7 @@ en [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
 | 0 | Convertido (puede haber diagnósticos) |
 | 1 | Otro error de tomd |
 | 2 | Argumentos de línea de órdenes incorrectos |
-| 3 | Entrada no soportada (tipo de archivo, HTML genérico, EPUB) |
+| 3 | Entrada no soportada (tipo de archivo, HTML genérico) |
 | 4 | Entrada ilegible: dañada, truncada o no es lo que dice su extensión |
 | 5 | Protegida con contraseña o DRM (no se elimina, ADR-009) |
 | 6 | Artículo o revisión de Wikipedia inexistente |
@@ -124,8 +175,9 @@ en [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
 
 ## Limitaciones
 
-- **EPUB:** aún no está implementado (PLAN.md, fase 2).
-- **Lotes:** la conversión por lotes reanudable (`tomd batch`, fase 7) no existe todavía.
+- **EPUB:** los de maquetación fija (cómics, álbumes) se convierten con un aviso
+  (`epub.fixed_layout`); su sentido puede depender del diseño de página. Los enlaces entre
+  partes del libro conservan solo el texto. Los EPUB con DRM se rechazan (ADR-009).
 - **Fórmulas en PDF:** salen como texto plano; solo Wikipedia aporta LaTeX.
 - **OCR:** el texto reconocido puede tener errores. Cada página leída por OCR lo indica
   con su confianza media (`pdf.ocr_applied`), y las de baja calidad se marcan con

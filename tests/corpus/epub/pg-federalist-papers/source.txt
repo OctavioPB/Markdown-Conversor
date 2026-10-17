@@ -1,0 +1,2 @@
+https://www.gutenberg.org/ebooks/1404
+Excerpt: spine 0,1, documents shortened to ~15000 characters; notes not called from the excerpt removed (scripts/excerpt_epub.py).

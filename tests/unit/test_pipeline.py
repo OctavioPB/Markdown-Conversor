@@ -29,7 +29,7 @@ def test_recorded_parsoid_html_is_dispatched_to_wikipedia_reader() -> None:
     assert doc.meta.revision_id is not None
 
 
-@pytest.mark.parametrize("name", ["book.epub", "notes.txt", "page.html"])
+@pytest.mark.parametrize("name", ["notes.txt", "page.html"])
 def test_unsupported_files_raise(tmp_path: Path, name: str) -> None:
     path = tmp_path / name
     path.write_bytes(b"<html><body>x</body></html>")
