@@ -363,3 +363,25 @@ def test_text_over_a_full_page_photo_is_not_ocred(
         Paragraph((Text("A caption printed over the photograph, as on a poster."),)) in doc.blocks
     )
     assert PDF_OCR_APPLIED not in [d.code for d in doc.diagnostics]
+
+
+def test_installed_app_uses_its_bundled_tesseract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In the packaged app (frozen), Tesseract and its data next to the executable win
+    over anything installed on the machine."""
+    import sys
+
+    bundled = tmp_path / "tesseract"
+    (bundled / "tessdata").mkdir(parents=True)
+    (bundled / "tesseract.exe").write_bytes(b"")
+    (bundled / "tessdata" / "spa.traineddata").write_bytes(b"")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "tomd.exe"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delenv("TOMD_TESSERACT", raising=False)
+    monkeypatch.delenv("TOMD_TESSDATA", raising=False)
+    engine = OcrEngine.find("spa")
+    assert engine is not None
+    assert Path(engine.command) == bundled / "tesseract.exe"
+    assert engine.tessdata == str(bundled / "tessdata")

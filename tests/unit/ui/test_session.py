@@ -203,3 +203,112 @@ def test_convert_button_runs_a_job_and_adds_the_result(tmp_path: Path, tk_root: 
     assert app.reviews[0].markdown_path.is_file()
     assert app.preview.get("1.0", "1.end") == app.reviews[0].title  # the title comes first
     app.close()
+
+
+def test_convert_folder_runs_the_batch_and_shows_the_report(
+    tmp_path: Path, tk_root: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+    import time
+
+    from tomd.ui import app as app_module
+    from tomd.ui.app import TomdApp
+
+    monkeypatch.setattr(app_module.messagebox, "showinfo", lambda *a, **k: None)
+    folder = tmp_path / "library"
+    folder.mkdir()
+    shutil.copyfile(TWO_PAGES, folder / "a.pdf")
+    shutil.copyfile(CORPUS / "epub" / "synthetic-epub3-notes" / "input.epub", folder / "b.epub")
+    app = TomdApp(tk_root, tmp_path / "out")  # type: ignore[arg-type]
+    app.ocr.set("never")
+    app.convert_folder(str(folder))
+    deadline = time.monotonic() + 120
+    while app.batch is not None and time.monotonic() < deadline:
+        app.root.update()
+        time.sleep(0.05)
+    assert app.batch is None
+    assert app.history.get("end") == "Informe: library"
+    assert "done | 2" in app.raw.get("1.0", "end")  # the report, shown in the Markdown tab
+    assert (tmp_path / "out" / "parrafos-a-traves-de-paginas.md").is_file()
+    app.close()
+
+
+# --- Drag and drop -------------------------------------------------------------------------
+
+
+def _wait(app: object, attribute: str, seconds: float = 120) -> None:
+    import time
+
+    deadline = time.monotonic() + seconds
+    while getattr(app, attribute) is not None and time.monotonic() < deadline:
+        app.root.update()  # type: ignore[attr-defined]
+        time.sleep(0.05)
+
+
+def test_dropped_file_converts_dropped_folders_batch(
+    tmp_path: Path, tk_root: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    from tomd.ui import app as app_module
+    from tomd.ui.app import TomdApp
+
+    shown: list[str] = []
+    monkeypatch.setattr(app_module.messagebox, "showinfo", lambda title, text: shown.append(text))
+    app = TomdApp(tk_root, tmp_path / "out")  # type: ignore[arg-type]
+    app.ocr.set("never")
+
+    app.handle_drop([str(tmp_path / "notes.txt")])  # nothing usable: explained, nothing runs
+    assert app.job is None and app.batch is None and "notes.txt" in shown[-1]
+
+    app.handle_drop([str(TWO_PAGES)])  # one document: converted and shown
+    assert app.job is not None
+    app.handle_drop([str(TWO_PAGES)])  # busy: told to wait
+    assert "en curso" in app.status.get()
+    _wait(app, "job")
+    assert len(app.reviews) == 1 and app.reviews[0].markdown_path.is_file()
+
+    other = tmp_path / "other.pdf"
+    shutil.copyfile(CORPUS / "pdf" / "synthetic-lists" / "input.pdf", other)
+    app.handle_drop([str(TWO_PAGES), str(other)])  # several: one batch
+    assert app.batch is not None and app.batch.label == "2 elementos"
+    _wait(app, "batch")
+    assert app.history.get("end") == "Informe: 2 elementos"
+    app.close()
+
+
+def test_drop_event_reaches_the_window_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tkinter = pytest.importorskip("tkinter")
+    pytest.importorskip("tkinterdnd2")
+    from types import SimpleNamespace
+
+    from tomd.ui.app import TomdApp, make_root
+
+    try:
+        root = make_root()
+    except tkinter.TclError:
+        pytest.skip("no display for Tk")
+    root.withdraw()
+    app = TomdApp(root, tmp_path / "out")
+    assert app.enable_drop()  # tkdnd loaded
+    received: list[list[str]] = []
+    monkeypatch.setattr(app, "handle_drop", received.append)
+    root.update()
+    # A drop is handled once, whether it lands on an inner area or on the window.
+    app.raw.event_generate("<<Drop>>", when="now")
+    root.update()
+    root.event_generate("<<Drop>>", when="now")
+    root.update()
+    assert len(received) == 2
+    # tkdnd hands the paths over as a Tcl list: braces around paths with spaces.
+    target = tmp_path / "with space" / "a.pdf"
+    other = tmp_path / "b.epub"
+    data = "{" + target.as_posix() + "} " + other.as_posix()
+    action = app._on_drop(SimpleNamespace(data=data, action="copy"))
+    assert action == "copy"
+    assert received[-1] == [target.as_posix(), other.as_posix()]
+    assert app._on_drop(SimpleNamespace(data=data, action="copy")) == "copy"
+    assert len(received) == 3  # the same dispatch: not handled a second time
+    app.close()

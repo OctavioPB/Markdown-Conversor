@@ -7,7 +7,36 @@ bytes, y toda pérdida de información queda registrada como un diagnóstico.
 
 > **Estado:** pre-1.0. Ver [Limitaciones](#limitaciones).
 
-## Instalación
+## Instalar la aplicación (Windows, sin conocimientos técnicos)
+
+1. Descarga `tomd-setup-<versión>.exe` y ábrelo con doble clic. No necesita permisos de
+   administrador ni tener Python: lleva todo dentro, incluido el reconocimiento de texto
+   (OCR) para PDF escaneados.
+2. Si Windows muestra «Windows protegió su PC», pulsa **Más información** y luego
+   **Ejecutar de todas formas**. El aviso sale porque el instalador no está firmado
+   digitalmente; el programa no se conecta a internet salvo para descargar artículos de
+   Wikipedia.
+3. Al terminar, abre **tomd** desde el menú Inicio (o desde el escritorio, si marcaste el
+   acceso directo).
+
+Para usarla:
+
+- **Arrastrar y soltar:** suelta sobre la ventana un PDF o un EPUB y se convierte al
+  momento. Si sueltas una carpeta, o varios archivos a la vez, se convierten todos juntos
+  (como «Convertir carpeta…»).
+- **Un documento:** «Abrir archivo…», elige un PDF o un EPUB y pulsa **Convertir**. A la
+  izquierda ves el original y a la derecha el texto convertido. Abajo, los avisos: al
+  hacer clic en uno se muestra la página afectada y qué hacer.
+- **Una carpeta entera:** «Convertir carpeta…». La barra de abajo muestra el avance. Si la
+  cancelas o apagas el equipo, al convertir de nuevo la misma carpeta sigue donde se quedó.
+- **Los resultados** quedan en `Documentos	omd` (hay un acceso en el menú Inicio:
+  «Carpeta de resultados»). Cada documento es un archivo `.md`, más una carpeta con sus
+  imágenes si las tiene.
+
+Se desinstala desde **Configuración → Aplicaciones**. Los documentos convertidos en
+`Documentos	omd` no se borran al desinstalar.
+
+## Instalación para desarrollo
 
 Requiere Python 3.12 y [uv](https://docs.astral.sh/uv/).
 
@@ -112,6 +141,9 @@ Una ventana local (Tkinter, sin navegador ni servidor) para convertir y revisar:
   previa formateada. Al hacer clic en una línea se muestra su bloque en el original; al
   pasar de página, el Markdown la sigue (casilla «Sincronizar»).
 - **Diagnósticos:** al seleccionar uno se va a su página y se muestra qué hacer.
+- **Arrastrar y soltar** (con `tkinterdnd2`): un archivo se convierte y se muestra; una
+  carpeta o varios elementos se convierten como lote. Sin `tkinterdnd2` la ventana
+  funciona igual, sin esta opción.
 
 Cada conversión se ejecuta en un proceso aparte: la ventana no se bloquea, se puede
 cancelar y un fallo nativo no la cierra. «Revisar .md existente…» abre una salida anterior
@@ -185,6 +217,29 @@ en [docs/DIAGNOSTICS.md](docs/DIAGNOSTICS.md).
   recupera. Una página escaneada tarda unos 3–4 s.
 - **Memoria:** el presupuesto es de unos 4 GB por proceso. Las páginas enormes se leen a
   menor resolución, y las imágenes de más de 40 MP se omiten con `image.dropped`.
+
+## Generar el instalador de Windows
+
+```bash
+winget install UB-Mannheim.TesseractOCR   # OCR que se incluye en la aplicación
+winget install JRSoftware.InnoSetup       # compilador del instalador
+uv run python scripts/build_windows.py    # dist/tomd/ y dist/installer/tomd-setup-<v>.exe
+```
+
+El script, en orden:
+
+1. Empaqueta con PyInstaller (`packaging/tomd.spec`) dos ejecutables que comparten
+   carpeta: `tomd.exe` (la ventana) y `tomd-cli.exe` (la línea de órdenes).
+2. Copia Tesseract: el ejecutable, solo las DLL que de verdad carga (leídas de sus tablas
+   de importación) y los datos de español, inglés y orientación.
+3. Genera `THIRD_PARTY_LICENSES.txt`.
+4. Prueba el ejecutable empaquetado, sin rutas de desarrollo: PDF, escaneo con OCR, EPUB
+   y lote.
+5. Compila el instalador con Inno Setup (`packaging/tomd.iss`): en español, por usuario,
+   con accesos en el menú Inicio y desinstalador.
+
+La versión del instalador es la de `pyproject.toml`. El instalador no está firmado: para
+evitar el aviso de SmartScreen hace falta un certificado de firma de código.
 
 ## Desarrollo
 

@@ -9,19 +9,21 @@ original, and turning pages scrolls the Markdown along.
 
 import io
 import os
+import re
 import subprocess
 import sys
 import tkinter as tk
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog, font, messagebox, ttk
+from typing import Any
 
 import pypdfium2 as pdfium
 from PIL import Image as PILImage
 from PIL import ImageTk
 
 from tomd.readers.pdf.reader import DEFAULT_BACKEND
-from tomd.ui.job import ConversionJob, Failed, Succeeded
+from tomd.ui.job import BatchEnded, BatchJob, BatchLine, ConversionJob, Failed, Succeeded
 from tomd.ui.session import ConversionRequest, DiagnosticRow, Review, preview_runs
 
 _POLL_MS = 150
@@ -36,6 +38,8 @@ class TomdApp:
     def __init__(self, root: tk.Tk, out_dir: Path | None = None) -> None:
         self.root = root
         root.title("tomd — conversión y revisión")
+        if getattr(sys, "frozen", False) and sys.platform == "win32":
+            root.iconbitmap(default=sys.executable)  # type: ignore[no-untyped-call]
         # Sized from the screen: with DPI awareness, fixed pixel sizes are tiny on scaled
         # displays.
         screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -48,13 +52,18 @@ class TomdApp:
         self.revision = tk.StringVar()
         self.backend = tk.StringVar(value=DEFAULT_BACKEND)
         self.ocr = tk.StringVar(value="auto")
-        self.out_dir = tk.StringVar(value=str(out_dir or Path.cwd() / "out"))
-        self.status = tk.StringVar(value="Elige un PDF, un HTML de Wikipedia o un artículo.")
+        self.out_dir = tk.StringVar(value=str(out_dir or default_out_dir()))
+        self.status = tk.StringVar(
+            value="Arrastra aquí archivos PDF o EPUB, o una carpeta; o usa «Abrir archivo…» y "
+            "«Convertir carpeta…». También acepta artículos de Wikipedia en «Origen»."
+        )
         self.page_label = tk.StringVar(value="—")
         self.sync = tk.BooleanVar(value=True)
         self.find_text = tk.StringVar()
 
         self.job: ConversionJob | None = None
+        self.batch: BatchJob | None = None
+        self._drop_handled = False
         self.reviews: list[Review] = []
         self.review: Review | None = None
         self.pdf: pdfium.PdfDocument | None = None
@@ -98,7 +107,7 @@ class TomdApp:
         self.root.after_idle(self._initial_split)
         bar = ttk.Frame(self.root)
         bar.pack(fill="x", padx=8, pady=(2, 6))
-        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=160)
+        self.progress = ttk.Progressbar(bar, mode="determinate", length=160, value=0)
         self.progress.pack(side="right")
         ttk.Label(bar, textvariable=self.status, anchor="w").pack(side="left", fill="x")
         self.root.bind("<Control-o>", lambda _e: self.choose_file())
@@ -123,13 +132,17 @@ class TomdApp:
         entry.grid(row=0, column=1, sticky="ew", padx=4)
         entry.bind("<Return>", lambda _e: self.start_conversion())
         ttk.Button(bar, text="Abrir archivo…", command=self.choose_file).grid(row=0, column=2)
+        self.folder_button = ttk.Button(bar, text="Convertir carpeta…", command=self.convert_folder)
+        self.folder_button.grid(
+            row=1, column=9, columnspan=2, sticky="ew", padx=(12, 0), pady=(4, 0)
+        )
         ttk.Label(bar, text="Revisión").grid(row=0, column=3, padx=(12, 2))
         ttk.Entry(bar, textvariable=self.revision, width=12).grid(row=0, column=4)
         ttk.Label(bar, text="Backend").grid(row=0, column=5, padx=(12, 2))
         ttk.Combobox(
             bar,
             textvariable=self.backend,
-            values=("heuristic", "docling"),
+            values=available_backends(),
             width=10,
             state="readonly",
         ).grid(row=0, column=6)
@@ -337,7 +350,7 @@ class TomdApp:
             subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(folder)])
 
     def start_conversion(self) -> None:
-        if self.job is not None:
+        if self.job is not None or self.batch is not None:
             return
         source = self.source.get().strip()
         if not source:
@@ -357,6 +370,7 @@ class TomdApp:
         self.job = ConversionJob(request)
         self.convert_button.state(["disabled"])
         self.cancel_button.state(["!disabled"])
+        self.progress.configure(mode="indeterminate")
         self.progress.start(12)
         self.status.set(f"Convirtiendo {Path(source).name if Path(source).exists() else source}…")
         self.root.after(_POLL_MS, self._poll)
@@ -366,6 +380,144 @@ class TomdApp:
             self.job.cancel()
             self._job_finished()
             self.status.set("Conversión cancelada.")
+        if self.batch is not None:
+            self.batch.cancel()
+            self._batch_finished()
+            self.status.set(
+                "Carpeta cancelada. Lo ya convertido se conserva: al convertir de nuevo la "
+                "misma carpeta se continúa donde se dejó."
+            )
+
+    # --- Folder conversion ---------------------------------------------------------------
+
+    def convert_folder(self, folder: str | None = None) -> None:
+        if self.job is not None or self.batch is not None:
+            return
+        folder = folder or filedialog.askdirectory(title="Carpeta con PDF y EPUB", mustexist=True)
+        if folder:
+            self._start_batch([folder])
+
+    def _start_batch(self, sources: list[str]) -> None:
+        self.batch = BatchJob(sources, self.out_dir.get(), self.ocr.get(), self.backend.get())
+        for button in (self.convert_button, self.folder_button):
+            button.state(["disabled"])
+        self.cancel_button.state(["!disabled"])
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(12)
+        self.status.set(f"Preparando {self.batch.label}…")
+        self.root.after(_POLL_MS, self._poll_batch)
+
+    # --- Drag and drop -------------------------------------------------------------------
+
+    def enable_drop(self) -> bool:
+        """Accept files and folders dropped on the window (tkdnd, through tkinterdnd2).
+        False when the window was not created with tkdnd: the rest works the same."""
+        if not hasattr(self.root, "drop_target_register"):
+            return False
+        from tkinterdnd2 import DND_FILES
+
+        # Tk areas are separate native windows, so each large one is registered, and the
+        # main window for the rest. One drop can then run more than one handler (an
+        # area's, then its toplevel's): `_on_drop` handles it once.
+        # tkinterdnd2 adds drop_target_register/dnd_bind at run time.
+        areas: tuple[Any, ...] = (
+            self.root, self.canvas, self.info, self.raw, self.preview, self.history, self.tree,
+        )  # fmt: skip
+        for widget in areas:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<Drop>>", self._on_drop)
+        return True
+
+    def _on_drop(self, event: Any) -> str:
+        if not self._drop_handled:
+            self._drop_handled = True  # until this event dispatch is over
+            self.root.after_idle(self._end_drop)
+            self.handle_drop([str(p) for p in self.root.tk.splitlist(event.data)])
+        return str(event.action)
+
+    def _end_drop(self) -> None:
+        self._drop_handled = False
+
+    def handle_drop(self, paths: list[str]) -> None:
+        """One document: convert it and show it. A folder, or several items: convert them
+        as a batch (resumable, with progress and a report)."""
+        if self.job is not None or self.batch is not None:
+            self.status.set("Hay una conversión en curso: espera a que termine o cancélala.")
+            return
+        usable = [p for p in paths if Path(p).is_dir() or Path(p).suffix.lower() in _DROPPABLE]
+        if not usable:
+            names = ", ".join(Path(p).name for p in paths[:3])
+            messagebox.showinfo(
+                "tomd",
+                f"No se puede convertir: {names}.\n\nSuelta archivos PDF o EPUB, páginas de "
+                "Wikipedia guardadas (.html) o carpetas que los contengan.",
+            )
+            return
+        if len(usable) == 1 and Path(usable[0]).is_file():
+            self.source.set(usable[0])
+            self.start_conversion()
+        else:
+            self._start_batch(usable)
+
+    def _poll_batch(self) -> None:
+        batch = self.batch
+        if batch is None:
+            return
+        for event in batch.events():
+            if isinstance(event, BatchLine):
+                self._batch_progress(event.text)
+            elif isinstance(event, BatchEnded):
+                self._batch_finished()
+                self._batch_done(batch, event)
+                return
+            elif isinstance(event, Failed):
+                self._batch_finished()
+                self.status.set("La conversión de la carpeta falló.")
+                messagebox.showerror("Fallo interno", event.message)
+                return
+        self.root.after(_POLL_MS, self._poll_batch)
+
+    def _batch_progress(self, line: str) -> None:
+        match = _BATCH_STEP.match(line)
+        if match is None:
+            self.status.set(line)
+            return
+        done, total = int(match.group(1)), int(match.group(2))
+        if str(self.progress.cget("mode")) != "determinate":
+            self.progress.stop()
+            self.progress.configure(mode="determinate", maximum=total)
+        self.progress.configure(value=done)
+        self.status.set(f"{done} de {total}: {line.split(maxsplit=3)[-1]}")
+
+    def _batch_done(self, batch: BatchJob, ended: BatchEnded) -> None:
+        done = ended.statuses.get("done", 0)
+        failed = sum(n for status, n in ended.statuses.items() if status != "done")
+        if not ended.planned:
+            self.status.set("Nada nuevo que convertir en esa carpeta: todo estaba ya convertido.")
+        else:
+            self.status.set(f"Carpeta terminada: {done} convertidos, {failed} con problemas.")
+        if ended.report:
+            report = Path(ended.report)
+            request = ConversionRequest(batch.sources[0], report.parent)
+            review = Review.from_result(request, report, (), None)
+            self._add_review(review)
+            self.history.delete("end")
+            self.history.insert("end", f"Informe: {batch.label}")
+            self.history.selection_set("end")
+        messagebox.showinfo(
+            "Carpeta terminada",
+            f"{done} documento(s) convertido(s)"
+            + (f", {failed} con problemas (ver el informe)" if failed else "")
+            + f".\n\nLos archivos están en:\n{self.out_dir.get()}",
+        )
+
+    def _batch_finished(self) -> None:
+        self.batch = None
+        self.progress.stop()
+        self.progress.configure(mode="indeterminate", value=0)
+        for button in (self.convert_button, self.folder_button):
+            button.state(["!disabled"])
+        self.cancel_button.state(["disabled"])
 
     def _poll(self) -> None:
         job = self.job
@@ -395,6 +547,7 @@ class TomdApp:
     def _job_finished(self) -> None:
         self.job = None
         self.progress.stop()
+        self.progress.configure(mode="determinate", value=0)
         self.convert_button.state(["!disabled"])
         self.cancel_button.state(["disabled"])
 
@@ -692,6 +845,8 @@ class TomdApp:
     def close(self) -> None:
         if self.job is not None:
             self.job.cancel()
+        if self.batch is not None:
+            self.batch.cancel()
         if self.pdf is not None:
             self.pdf.close()
         self.root.destroy()
@@ -716,6 +871,28 @@ _NAV_KEYS = frozenset(
 )
 
 
+# What a drop may contain besides folders.
+_DROPPABLE = frozenset({".pdf", ".epub", ".html", ".htm"})
+_BATCH_STEP = re.compile(r"^\[(\d+)/(\d+)\]")
+
+
+def available_backends() -> tuple[str, ...]:
+    """PDF backends that can run here: docling only when its optional extra is installed
+    (the packaged app does not include it)."""
+    import importlib.util
+
+    return ("heuristic", "docling") if importlib.util.find_spec("docling") else ("heuristic",)
+
+
+def default_out_dir() -> Path:
+    """Where conversions go: `out/` next to the work when running from source; in the
+    installed app (frozen), Documents\\tomd, which a non-technical user can find."""
+    if getattr(sys, "frozen", False):
+        documents = Path.home() / "Documents"
+        return (documents if documents.is_dir() else Path.home()) / "tomd"
+    return Path.cwd() / "out"
+
+
 def _read_only_key(event: "tk.Event[tk.Text]") -> str | None:
     control = isinstance(event.state, int) and bool(event.state & 4)
     return None if control or event.keysym in _NAV_KEYS else "break"
@@ -733,10 +910,22 @@ def enable_dpi_awareness() -> None:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)  # per-monitor aware (Windows 8.1+)
 
 
+def make_root() -> tk.Tk:
+    """The main window, with drag and drop when tkdnd can load; a plain Tk otherwise."""
+    try:
+        from tkinterdnd2 import TkinterDnD
+
+        root: tk.Tk = TkinterDnD.Tk()
+        return root
+    except (ImportError, RuntimeError, tk.TclError):
+        return tk.Tk()
+
+
 def run(source: str | None = None, out_dir: Path | None = None) -> int:
     enable_dpi_awareness()
-    root = tk.Tk()
+    root = make_root()
     app = TomdApp(root, out_dir)
+    app.enable_drop()
     if source:
         app.source.set(source)
     root.mainloop()

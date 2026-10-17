@@ -9,6 +9,7 @@ import math
 import os
 import re
 import shutil
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -72,7 +73,12 @@ class OcrEngine:
 
     @classmethod
     def find(cls, languages: str) -> "OcrEngine | None":
-        command = os.environ.get("TOMD_TESSERACT") or shutil.which("tesseract")
+        bundled = _bundled_dir()
+        command = os.environ.get("TOMD_TESSERACT")
+        if not command and bundled is not None:
+            exe = bundled / ("tesseract.exe" if sys.platform == "win32" else "tesseract")
+            command = str(exe) if exe.is_file() else None
+        command = command or shutil.which("tesseract")
         if not command and _WINDOWS_TESSERACT.is_file():
             command = str(_WINDOWS_TESSERACT)
         if not command:
@@ -80,11 +86,21 @@ class OcrEngine:
         return cls(command, _tessdata_dir(), languages)
 
 
+def _bundled_dir() -> Path | None:
+    """Tesseract shipped with the installed app (packaging/): `tesseract/` next to the
+    executable. None when running from source."""
+    if not getattr(sys, "frozen", False):
+        return None
+    return Path(sys.executable).resolve().parent / "tesseract"
+
+
 def _tessdata_dir() -> str | None:
     explicit = os.environ.get("TOMD_TESSDATA")
     if explicit:
         return explicit
+    bundled = _bundled_dir()
     candidates = [
+        *([bundled / "tessdata"] if bundled is not None else []),
         Path(os.environ.get("LOCALAPPDATA", "")) / "tomd" / "tessdata",
         Path.home() / ".local" / "share" / "tomd" / "tessdata",
     ]

@@ -9,6 +9,7 @@ dependencies = [
     "pillow>=12.3.0",
     "pypdfium2>=5.14.0",
     "pytesseract>=0.3.13",
+    "tkinterdnd2>=0.6.4",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +26,7 @@ dev = [
     "markdown-it-py>=4.2.0",
     "mdit-py-plugins>=0.6.1",
     "mypy>=1.11",
+    "pyinstaller>=6.22.3",
     "pypandoc-binary>=1.17",
     "pytest>=8.3",
     "pyyaml>=6.0.3",
@@ -67,5 +69,8 @@ markers = [
 
 [[tool.mypy.overrides]]
 # pypdfium2 ships no type information (ADR-014); its use is confined to readers/pdf/extract.py.
-module = ["pypdfium2", "pypdfium2.*", "docling", "docling.*", "pypandoc", "pytesseract", "pytesseract.*"]
+module = [
+    "pypdfium2", "pypdfium2.*", "docling", "docling.*", "pypandoc", "pytesseract",
+    "pytesseract.*", "tkinterdnd2", "tkinterdnd2.*",
+]
 ignore_missing_imports = true
