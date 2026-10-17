@@ -13,10 +13,13 @@ import re
 from dataclasses import dataclass, replace
 
 from tomd.ir import Diagnostic, Provenance
+from tomd.ir.diagnostics import (
+    PDF_FOOTNOTE_UNMATCHED,
+    diagnose,
+)
 from tomd.readers.pdf.classify import Classified, Kind
 from tomd.readers.pdf.model import DocStats, Line, Span, TextBlock
 
-PDF_FOOTNOTE_UNMATCHED = "pdf.footnote_unmatched"
 SYMBOLS = "*†‡§¶‖⋆∗#"
 # Notes are set smaller than the body text.
 _SMALL_PRINT = 0.9
@@ -80,9 +83,8 @@ def link_footnotes(
         if not any_paired:
             kept_candidates.add(b_index)
             diagnostics.append(
-                Diagnostic(
+                diagnose(
                     PDF_FOOTNOTE_UNMATCHED,
-                    "info",
                     "Footnote-like text without a matching call; kept as text.",
                     Provenance(source, page, classified[b_index].block.bbox),
                 )

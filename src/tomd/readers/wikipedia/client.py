@@ -108,13 +108,20 @@ class WikimediaClient:
                     return response.read()
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
-                    raise SourceNotFoundError(f"Not found: {url}") from exc
+                    raise SourceNotFoundError(
+                        f"Not found: {url}. Check the article title (and --revision, if given)."
+                    ) from exc
                 if exc.code not in RETRYABLE_STATUS or attempt == self.max_retries:
-                    raise NetworkError(f"HTTP {exc.code} for {url}") from exc
+                    raise NetworkError(
+                        f"HTTP {exc.code} for {url} after retries; Wikimedia may be busy, "
+                        "try again later."
+                    ) from exc
                 self.sleep(_retry_delay(exc.headers.get("Retry-After"), attempt))
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 if attempt == self.max_retries:
-                    raise NetworkError(f"Request failed for {url}: {exc}") from exc
+                    raise NetworkError(
+                        f"Request failed for {url}: {exc}. Check the network connection."
+                    ) from exc
                 self.sleep(_retry_delay(None, attempt))
         raise AssertionError("unreachable")
 

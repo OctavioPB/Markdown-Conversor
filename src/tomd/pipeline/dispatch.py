@@ -42,16 +42,25 @@ def read_source(
             data = path.read_bytes()
             if any(marker in data for marker in _PARSOID_MARKERS):
                 return read_parsoid_html(data)
-            raise UnsupportedSourceError(f"Generic HTML is out of scope: {source}")
+            raise UnsupportedSourceError(
+                f"{source}: generic HTML is out of scope; only Parsoid HTML from Wikipedia "
+                "(as saved by scripts/record_wiki_fixture.py) is supported."
+            )
         if suffix == ".pdf":
             return PdfReader(backend=pdf_backend, ocr=ocr).read(source)
         if suffix == ".epub":
-            raise UnsupportedSourceError(f"No reader for {suffix} yet (see PLAN.md): {source}")
-        raise UnsupportedSourceError(f"Unrecognised file type: {source}")
+            raise UnsupportedSourceError(f"{source}: EPUB is not supported yet (PLAN.md, phase 2).")
+        raise UnsupportedSourceError(
+            f"{source}: unsupported file type {suffix or '(none)'!r}; tomd converts .pdf "
+            "files, Wikipedia Parsoid .html files and Wikipedia articles."
+        )
     try:
         parse_article_ref(source)
     except UnsupportedSourceError:
-        raise UnsupportedSourceError(f"Not a file or a Wikipedia article: {source}") from None
+        raise UnsupportedSourceError(
+            f"{source}: no such file, and not a Wikipedia article (give a URL such as "
+            "https://es.wikipedia.org/wiki/Teorema_de_Pitágoras or lang:Title)."
+        ) from None
     return WikipediaReader(revision=revision).read(source)
 
 

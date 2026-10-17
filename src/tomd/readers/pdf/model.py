@@ -115,9 +115,12 @@ class PageInfo:
     height: float
     char_count: int
     garbage_count: int
-    image_count: int = 0  # images too small to be figures, or not extractable
+    image_count: int = 0  # images lost: unreadable, or too large to decode safely
     has_struct_tree: bool = False
     rotated_count: int = 0
+    unreadable: bool = False  # PDFium could not load the page; it contributes nothing
+    empty: bool = False  # no page objects at all: blank, or an undecodable content stream
+    small_image_count: int = 0  # images too small to be figures (icons, logos)
 
 
 @dataclass(frozen=True, slots=True)

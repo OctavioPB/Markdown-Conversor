@@ -32,20 +32,22 @@ from tomd.ir import (
     Paragraph,
     Provenance,
     Row,
-    Severity,
     Strong,
     Table,
     Text,
     ThematicBreak,
 )
 from tomd.ir import diagnostics as codes
+from tomd.ir.diagnostics import (
+    HTML_DEFINITION_LIST_FLATTENED,
+    HTML_UNKNOWN_ELEMENT,
+    diagnose,
+)
 
 type Element = etree._Element
 
 # Diagnostic codes owned by the HTML mapping.
-HTML_UNKNOWN_ELEMENT = "html.unknown_element"
-HTML_DEFINITION_LIST_FLATTENED = "html.definition_list_flattened"
-HTML_INLINE_IMAGE_DROPPED = codes.IMAGE_DROPPED
+
 
 _HTML_WS = re.compile(r"[ \t\n\r\f]+")
 
@@ -77,11 +79,28 @@ _LANG_CLASS = re.compile(r"(?:^|\s)(?:lang|language)-([\w+#.-]+)")
 _TEX_DISPLAYSTYLE = re.compile(r"^\{\\displaystyle\s*(.*)\}$", re.DOTALL)
 
 
-def parse_html(data: bytes) -> Element:
-    """Parse an HTML document safely (no network, no entity expansion of external DTDs)."""
-    parser = html.HTMLParser(encoding="utf-8", no_network=True, remove_comments=True)
+_REPLACEMENT_UTF8 = "\ufffd".encode()
+
+
+def invalid_utf8_count(data: bytes) -> int:
+    """Invalid UTF-8 sequences in `data` (each becomes one U+FFFD when parsed)."""
     try:
-        root = html.document_fromstring(data, parser=parser)
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        decoded = data.decode("utf-8", errors="replace")
+        return decoded.count("\ufffd") - data.count(_REPLACEMENT_UTF8)
+    return 0
+
+
+def parse_html(data: bytes) -> Element:
+    """Parse an HTML document safely (no network, no entity expansion of external DTDs).
+
+    The bytes are decoded here, invalid sequences replaced by U+FFFD: lxml decodes text
+    lazily and would raise on first access, deep inside a reader."""
+    text = data.decode("utf-8", errors="replace").replace("\x00", "\ufffd")
+    parser = html.HTMLParser(no_network=True, remove_comments=True)
+    try:
+        root = html.document_fromstring(text, parser=parser)
     except (etree.ParserError, ValueError) as exc:
         raise UnreadableInputError(f"HTML could not be parsed: {exc}") from exc
     return root
@@ -139,13 +158,13 @@ class HtmlMapper:
 
     # --- diagnostics ---------------------------------------------------------------------
 
-    def report(self, code: str, message: str, severity: Severity = "info") -> None:
-        self.diagnostics.append(Diagnostic(code, severity, message, Provenance(self.source_ref)))
+    def report(self, code: str, message: str) -> None:
+        self.diagnostics.append(diagnose(code, message, Provenance(self.source_ref)))
 
-    def report_once(self, code: str, message: str, severity: Severity = "info") -> None:
+    def report_once(self, code: str, message: str) -> None:
         if (code, message) not in self._reported:
             self._reported.add((code, message))
-            self.report(code, message, severity)
+            self.report(code, message)
 
     @property
     def provenance(self) -> Provenance:
@@ -360,9 +379,7 @@ class HtmlMapper:
                 return self._script(el, _SUPERSCRIPT if tag == "sup" else _SUBSCRIPT)
             case "img":
                 alt = _ws(el.get("alt") or "").strip()
-                self.report_once(
-                    HTML_INLINE_IMAGE_DROPPED, "Inline images dropped (alt text kept)."
-                )
+                self.report_once(codes.IMAGE_DROPPED, "Inline images dropped (alt text kept).")
                 return [Text(alt)] if alt else []
             case "math":
                 tex = tex_of_math(el)
@@ -382,7 +399,7 @@ class HtmlMapper:
         return content
 
     def _unrecoverable_math(self, el: Element) -> tuple[Inline, ...]:
-        self.report(codes.MATH_UNRECOVERABLE, "Formula without recoverable LaTeX.", "warning")
+        self.report(codes.MATH_UNRECOVERABLE, "Formula without recoverable LaTeX.")
         text = _ws(text_content(el)).strip()
         return (Code(text),) if text else ()
 

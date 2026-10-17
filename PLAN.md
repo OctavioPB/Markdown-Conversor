@@ -108,9 +108,13 @@ reanuda sin duplicados, y la memoria pico se mantiene dentro del presupuesto.
 
 ## Fase 8 — Endurecimiento
 - [ ] Fuzzing de entradas malformadas (ZIP corruptos, PDF truncados)
-- [ ] Revisión de diagnósticos: mensajes accionables
-- [ ] README de uso y ejemplos
-- [ ] Etiquetar v1.0
+      (PDF y HTML hechos: `scripts/fuzz_inputs.py`, 1 000 entradas sin hallazgos tras las
+      correcciones; falta EPUB/ZIP cuando exista el lector de la fase 2)
+- [x] Revisión de diagnósticos: mensajes accionables (catálogo único con severidad, significado
+      y acción; `docs/DIAGNOSTICS.md` generado; códigos de salida por tipo de error)
+- [x] README de uso y ejemplos
+- [ ] Etiquetar v1.0 (bloqueado: fases 2 y 7 sin hacer, borradores del corpus sin revisar,
+      ADR-016 en Propuesta)
 
 ---
 

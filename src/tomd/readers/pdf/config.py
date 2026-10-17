@@ -142,6 +142,9 @@ class PdfHeuristicsConfig:
     ocr_skew_step: float = 0.1
     # Below this angle deskewing is not worth the resampling blur.
     ocr_min_skew: float = 0.2
+    # Pixel budget for one rendered page: larger pages (posters, plans) render at a lower
+    # resolution. 40 MP is A2 at 300 dpi; Tesseract then needs about 1 GB.
+    ocr_max_pixels: int = 40_000_000
     # Straight ink runs at least this long (points) and at most this thick are ruled
     # lines; the longest text strokes (dashes) stay far below half an inch.
     ocr_rule_min_length: float = 36.0

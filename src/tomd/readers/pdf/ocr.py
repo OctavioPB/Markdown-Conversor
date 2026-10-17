@@ -5,6 +5,7 @@ reading order work exactly as for digital pages. Each line carries Tesseract's m
 confidence.
 """
 
+import math
 import os
 import re
 import shutil
@@ -103,6 +104,7 @@ class OcrPage:
     height: float
     quarter_turns: int  # clockwise quarter turns applied to make the page upright
     skew: float  # degrees removed by deskewing
+    dpi: int = 300  # rendering resolution (lower than configured for very large pages)
 
 
 @contextmanager
@@ -128,7 +130,11 @@ def ocr_page(engine: OcrEngine, page: Any, number: int, cfg: PdfHeuristicsConfig
     import pytesseract  # imported lazily: only scanned documents need it
 
     pytesseract.pytesseract.tesseract_cmd = engine.command
-    image = page.render(scale=cfg.ocr_dpi / 72, grayscale=True).to_pil().convert("L")
+    width_pt, height_pt = page.get_size()
+    dpi = min(
+        float(cfg.ocr_dpi), 72 * math.sqrt(cfg.ocr_max_pixels / max(width_pt * height_pt, 1.0))
+    )
+    image = page.render(scale=dpi / 72, grayscale=True).to_pil().convert("L")
     try:
         with _tesseract_env(engine):
             # Faded ink on grey paper: stretch to the full range. A clean scan already
@@ -141,7 +147,7 @@ def ocr_page(engine: OcrEngine, page: Any, number: int, cfg: PdfHeuristicsConfig
             if abs(angle) >= cfg.ocr_min_skew:
                 level = image.rotate(-angle, resample=Image.Resampling.BILINEAR, fillcolor=255)
                 image = _swap(image, level)
-            scale = 72 / cfg.ocr_dpi
+            scale = 72 / dpi
             # Table rules confuse Tesseract's layout analysis (rows of a grid go
             # missing): keep them as rulings for the grid finder, and erase them.
             rules = find_rule_boxes(
@@ -160,7 +166,7 @@ def ocr_page(engine: OcrEngine, page: Any, number: int, cfg: PdfHeuristicsConfig
     finally:
         image.close()
     skew = angle if abs(angle) >= cfg.ocr_min_skew else 0.0
-    return OcrPage(lines, chars, rulings, width, height, turns, skew)
+    return OcrPage(lines, chars, rulings, width, height, turns, skew, round(dpi))
 
 
 RuleBox = tuple[bool, int, int, int, int]  # horizontal, x0, y0, x1, y1 (pixels, end exclusive)

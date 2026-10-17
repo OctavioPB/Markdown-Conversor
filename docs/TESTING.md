@@ -89,3 +89,26 @@ Se usa para:
 El lector de Wikipedia se prueba con respuestas grabadas (`tests/fixtures/wiki/*.html` y
 sus cabeceras). Un fixture de pytest bloquea cualquier socket en tests, de modo que una
 llamada accidental a la red falla en lugar de pasar en silencio.
+
+## Fuzzing de entradas malformadas
+
+`scripts/fuzz_inputs.py` muta de forma determinista (por semilla) entradas del corpus y
+convierte cada una en su propio subproceso, con tiempo límite:
+
+- **PDF:** truncado, bytes cambiados, basura insertada, xref o trailer rotos, `/Length`
+  falsos, flujos comprimidos corruptos, referencias cíclicas.
+- **HTML:** truncado, UTF-8 inválido y NUL, anidamiento extremo, etiquetas sin cerrar.
+
+El contrato es que cada entrada se convierte (quizá con diagnósticos) o falla con un
+`TomdError`. Cualquier otra excepción, cuelgue, caída del proceso o memoria pico por
+encima de 4 GB es un hallazgo. Cada hallazgo corregido queda fijado como test en
+`tests/unit/test_hardening.py`; las entradas que lo reproducen viven en
+`tests/unit/fixtures/fuzz/` (derivadas de los PDF sintéticos, dominio público).
+
+```bash
+uv run python scripts/fuzz_inputs.py --iterations 400 --seed 2 --keep out/fuzz
+```
+
+El catálogo de diagnósticos (`src/tomd/ir/diagnostics.py`) tiene sus propios tests: todo
+código emitido está catalogado, todo código catalogado se emite en algún sitio, la
+severidad sale solo del catálogo y `docs/DIAGNOSTICS.md` está al día.

@@ -405,7 +405,7 @@ def test_figure_is_extracted_placed_and_captioned(tmp_path: Path) -> None:
     assert figure.caption == (Text("Figure 1: A red rectangle."),)
     (asset,) = doc.assets
     assert asset.sha256 == figure.src_asset and asset.media_type == "image/png"
-    assert codes.IMAGE_DROPPED in _codes(doc)  # the small one
+    assert codes.IMAGE_SKIPPED_SMALL in _codes(doc)  # the small one
 
 
 def test_identical_images_are_stored_once(tmp_path: Path) -> None:

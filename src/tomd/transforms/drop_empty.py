@@ -24,7 +24,7 @@ from tomd.ir import (
     Text,
 )
 from tomd.ir import diagnostics as codes
-from tomd.ir.diagnostics import Diagnostic
+from tomd.ir.diagnostics import diagnose
 from tomd.ir.walk import map_block_children, map_inline_children
 
 
@@ -41,9 +41,7 @@ def drop_empty(doc: Document) -> Document:
                 block = replace(block, caption=())
             if isinstance(block, Table) and not block.header_rows and not block.body_rows:
                 diagnostics.append(
-                    Diagnostic(
-                        codes.TABLE_EMPTY_DROPPED, "info", "Empty table dropped.", block.provenance
-                    )
+                    diagnose(codes.TABLE_EMPTY_DROPPED, "Empty table dropped.", block.provenance)
                 )
                 if not _has_content(block.caption):
                     continue

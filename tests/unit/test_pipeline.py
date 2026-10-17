@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from tomd.cli import main
+from tomd.cli import EXIT_UNSUPPORTED, main
 from tomd.errors import UnsupportedSourceError
 from tomd.pipeline.dispatch import convert, read_source, slugify
 
@@ -55,5 +55,5 @@ def test_cli_convert(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None
 
 
 def test_cli_reports_errors(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert main(["convert", str(tmp_path / "missing.txt"), "-o", str(tmp_path)]) == 2
-    assert "error:" in capsys.readouterr().err
+    assert main(["convert", str(tmp_path / "missing.txt"), "-o", str(tmp_path)]) == EXIT_UNSUPPORTED
+    assert "no such file" in capsys.readouterr().err

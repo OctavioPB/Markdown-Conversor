@@ -7,16 +7,41 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from tomd import __version__
-from tomd.errors import TomdError
+from tomd.errors import (
+    DrmProtectedError,
+    NetworkError,
+    SourceNotFoundError,
+    TomdError,
+    UnreadableInputError,
+    UnsupportedSourceError,
+)
+from tomd.ir.diagnostics import CATALOG, Diagnostic
 
+# Exit codes (README). 2 is left to argparse, which uses it for command-line errors.
 EXIT_OK = 0
-EXIT_FAILED = 2
+EXIT_FAILED = 1  # any other TomdError
+EXIT_UNSUPPORTED = 3
+EXIT_UNREADABLE = 4
+EXIT_DRM = 5
+EXIT_NOT_FOUND = 6
+EXIT_NETWORK = 7
+_EXIT_CODES: tuple[tuple[type[TomdError], int], ...] = (
+    (UnsupportedSourceError, EXIT_UNSUPPORTED),
+    (UnreadableInputError, EXIT_UNREADABLE),
+    (DrmProtectedError, EXIT_DRM),
+    (SourceNotFoundError, EXIT_NOT_FOUND),
+    (NetworkError, EXIT_NETWORK),
+)
+
+
+def exit_code(exc: TomdError) -> int:
+    return next((code for kind, code in _EXIT_CODES if isinstance(exc, kind)), EXIT_FAILED)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tomd",
-        description="Convert PDF, EPUB and Wikipedia articles to Markdown.",
+        description="Convert PDF files and Wikipedia articles to Markdown (EPUB: planned).",
     )
     parser.add_argument("--version", action="version", version=f"tomd {__version__}")
     sub = parser.add_subparsers(dest="command")
@@ -64,12 +89,25 @@ def _convert(source: str, out: Path, revision: int | None, backend: str, ocr: st
         result = convert(source, out, revision=revision, pdf_backend=backend, ocr=OcrMode(ocr))
     except TomdError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        return EXIT_FAILED
+        return exit_code(exc)
     print(result.markdown_path)
-    counts = Counter(d.code for d in result.diagnostics)
-    for code, n in sorted(counts.items()):
-        print(f"  {code}: {n}", file=sys.stderr)
+    _print_diagnostics(result.diagnostics)
     return EXIT_OK
+
+
+_SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
+
+
+def _print_diagnostics(diagnostics: Sequence[Diagnostic]) -> None:
+    """One line per code, most severe first, with the catalog's advice where there is
+    some. The full list (with pages) is in the front matter count and the IR."""
+    counts = Counter(d.code for d in diagnostics)
+    severity = {d.code: d.severity for d in diagnostics}
+    for code in sorted(counts, key=lambda c: (_SEVERITY_ORDER[severity[c]], c)):
+        print(f"  {severity[code]:7} {code}: {counts[code]}", file=sys.stderr)
+        info = CATALOG.get(code)
+        if info and info.action and severity[code] != "info":
+            print(f"          -> {info.action}", file=sys.stderr)
 
 
 def _debug_pdf(source: Path, page: int, stage: str, out: Path | None) -> int:
@@ -77,7 +115,10 @@ def _debug_pdf(source: Path, page: int, stage: str, out: Path | None) -> int:
 
     try:
         svg = render_debug_svg(source, page, stage)
-    except (TomdError, ValueError) as exc:
+    except TomdError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exit_code(exc)
+    except ValueError as exc:  # a page or stage out of range
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_FAILED
     target = out or source.with_name(f"{source.stem}.p{page}.{stage}.svg")

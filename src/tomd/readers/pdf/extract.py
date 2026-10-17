@@ -13,6 +13,7 @@ from typing import Any
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
+from PIL import Image as PILImage
 
 from tomd.errors import DrmProtectedError, UnreadableInputError
 from tomd.readers.pdf.model import Char, PageInfo, PdfFigure, Ruling
@@ -53,14 +54,27 @@ class PdfMetadata:
     encrypted: bool
 
 
+# "Failed to load document (PDFium: Data format error)." -> "Data format error"; PDFium
+# reports "Success" for some failures, which says nothing.
+_PDFIUM_REASON = re.compile(r"PDFium: ([^)]+)\)")
+
+
 @contextmanager
 def open_pdf(path: Path) -> Iterator[pdfium.PdfDocument]:
     try:
         doc = pdfium.PdfDocument(str(path))
     except pdfium.PdfiumError as exc:
         if "password" in str(exc).lower():
-            raise DrmProtectedError(f"Password-protected PDF (ADR-009): {path.name}") from exc
-        raise UnreadableInputError(f"PDF could not be opened: {path.name}: {exc}") from exc
+            raise DrmProtectedError(
+                f"{path.name} is password-protected; tomd does not remove protection "
+                "(ADR-009). Convert an unprotected copy."
+            ) from exc
+        reason = _PDFIUM_REASON.search(str(exc))
+        detail = reason.group(1) if reason and reason.group(1) != "Success" else "unknown cause"
+        raise UnreadableInputError(
+            f"{path.name} could not be opened as a PDF ({detail}): it is damaged, truncated "
+            "or not a PDF. Re-export it from its source or repair it (`qpdf in.pdf out.pdf`)."
+        ) from exc
     try:
         yield doc
     finally:
@@ -100,10 +114,22 @@ class PageContent:
     rulings: list[Ruling]  # straight lines that may form table grids
 
 
-def iter_pages(doc: pdfium.PdfDocument, min_figure_area: float = 0.0) -> Iterator[PageContent]:
-    """Yield each page's content. Smaller or unreadable images are only counted."""
+# Images larger than this many pixels are skipped before decoding: 40 MP is beyond any
+# figure at print resolution (a full A3 photo at 300 dpi is 35 MP) and decodes to 160 MB.
+MAX_IMAGE_PIXELS = 40_000_000
+
+
+def iter_pages(
+    doc: pdfium.PdfDocument, min_figure_area: float = 0.0, max_image_pixels: int = MAX_IMAGE_PIXELS
+) -> Iterator[PageContent]:
+    """Yield each page's content. Small, huge or unreadable images are only counted."""
     for index in range(len(doc)):
-        page = doc[index]
+        try:
+            page = doc[index]
+        except pdfium.PdfiumError:
+            # A damaged page object: skip it, keep the rest of the document.
+            yield PageContent(PageInfo(index + 1, 0.0, 0.0, 0, 0, unreadable=True), [], [], [])
+            continue
         try:
             width, height = page.get_size()
             textpage = page.get_textpage()
@@ -111,12 +137,26 @@ def iter_pages(doc: pdfium.PdfDocument, min_figure_area: float = 0.0) -> Iterato
                 chars, garbage, rotated = _page_chars(textpage)
             finally:
                 textpage.close()
-            figures, skipped = _page_figures(page, index + 1, min_figure_area * width * height)
+            figures, skipped, small = _page_figures(
+                page, index + 1, min_figure_area * width * height, max_image_pixels
+            )
             rulings = _page_rulings(page)
             struct = _has_struct_tree(page)
+            empty = pdfium_c.FPDFPage_CountObjects(page) == 0
         finally:
             page.close()
-        info = PageInfo(index + 1, width, height, len(chars), garbage, skipped, struct, rotated)
+        info = PageInfo(
+            index + 1,
+            width,
+            height,
+            len(chars),
+            garbage,
+            skipped,
+            struct,
+            rotated,
+            empty=empty,
+            small_image_count=small,
+        )
         yield PageContent(info, chars, figures, rulings)
 
 
@@ -146,18 +186,28 @@ def _page_rulings(page: pdfium.PdfPage) -> list[Ruling]:
 
 
 def _page_figures(
-    page: pdfium.PdfPage, number: int, min_area: float
-) -> tuple[list[PdfFigure], int]:
+    page: pdfium.PdfPage, number: int, min_area: float, max_pixels: int
+) -> tuple[list[PdfFigure], int, int]:
+    """Figures, images lost (unreadable or too large) and images skipped as too small."""
     figures: list[PdfFigure] = []
-    skipped = 0
+    skipped = small = 0
     for obj, (x0, y0, x1, y1) in _objects_in_page_space(page, pdfium_c.FPDF_PAGEOBJ_IMAGE):
         if (x1 - x0) * (y1 - y0) < min_area:
+            small += 1
+            continue
+        try:
+            px_width, px_height = obj.get_px_size()
+        except pdfium.PdfiumError:
+            skipped += 1
+            continue
+        if px_width * px_height > max_pixels:  # a decompression bomb, or a damaged size
             skipped += 1
             continue
         buffer = io.BytesIO()
         try:
             obj.extract(buffer)  # JPEG/JPX copied byte for byte; other formats as PNG
-        except Exception:  # any PDFium/PIL failure loses only this image
+        except (pdfium.PdfiumError, OSError, ValueError, PILImage.DecompressionBombError):
+            # Damaged image data, or a format PIL cannot encode: this image only is lost.
             skipped += 1
             continue
         data = buffer.getvalue()
@@ -166,7 +216,7 @@ def _page_figures(
             skipped += 1
             continue
         figures.append(PdfFigure(number, (x0, y0, x1, y1), data, media_type))
-    return figures, skipped
+    return figures, skipped, small
 
 
 def _media_type(data: bytes) -> str | None:

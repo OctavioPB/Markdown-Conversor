@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from tomd.ir import Block, Diagnostic, Document, Heading, Inline
 from tomd.ir import diagnostics as codes
+from tomd.ir.diagnostics import diagnose
 from tomd.ir.walk import map_block_children, plain_text
 
 MAX_LEVEL = 6
@@ -35,9 +36,7 @@ def normalize_headings(doc: Document) -> Document:
         title = _collapse(plain_text(first_h1.children))
         blocks = tuple(b for b in blocks if b is not first_h1)
     else:
-        diagnostics.append(
-            Diagnostic(codes.DOC_TITLE_MISSING, "error", "Document has no title and no H1.")
-        )
+        diagnostics.append(diagnose(codes.DOC_TITLE_MISSING, "Document has no title and no H1."))
 
     shift = 1 if any(h.level == 1 for h in _all_headings(blocks)) else 0
     blocks = _Releveler(shift, diagnostics).blocks(blocks)
@@ -66,9 +65,8 @@ class _Releveler:
         new = self._stack[-1][1] + 1 if self._stack else FIRST_BODY_LEVEL
         if new > MAX_LEVEL:
             self._diagnostics.append(
-                Diagnostic(
+                diagnose(
                     codes.HEADING_LEVEL_CLAMPED,
-                    "warning",
                     f"Heading nested deeper than H{MAX_LEVEL}; clamped to H{MAX_LEVEL}.",
                     block.provenance,
                 )

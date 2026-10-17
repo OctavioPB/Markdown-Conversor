@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
+from tomd.errors import UnreadableInputError
 from tomd.ir import (
     Asset,
     Block,
@@ -24,10 +25,24 @@ from tomd.ir import (
     ListItem,
     Paragraph,
     Provenance,
-    Severity,
     Text,
 )
 from tomd.ir import diagnostics as codes
+from tomd.ir.diagnostics import (
+    PDF_FURNITURE_REMOVED,
+    PDF_GARBAGE_TEXT,
+    PDF_LOW_CONFIDENCE,
+    PDF_NO_TEXT_LAYER,
+    PDF_OCR_APPLIED,
+    PDF_OCR_LOW_CONFIDENCE,
+    PDF_OCR_UNAVAILABLE,
+    PDF_PAGE_EMPTY,
+    PDF_PAGE_UNREADABLE,
+    PDF_PERMISSIONS_RESTRICTED,
+    PDF_ROTATED_TEXT_DROPPED,
+    PDF_STRUCT_TREE_IGNORED,
+    diagnose,
+)
 from tomd.readers.pdf.blocks import document_stats, merge_across_pages, segment_blocks
 from tomd.readers.pdf.classify import (
     NUMBERED_HEADING,
@@ -64,16 +79,6 @@ from tomd.readers.pdf.tables import (
     find_rule_tables,
 )
 
-PDF_GARBAGE_TEXT = "pdf.garbage_text"
-PDF_NO_TEXT_LAYER = "pdf.no_text_layer"
-PDF_STRUCT_TREE_IGNORED = "pdf.struct_tree_ignored"
-PDF_PERMISSIONS_RESTRICTED = "pdf.permissions_restricted"
-PDF_LOW_CONFIDENCE = "pdf.low_confidence"
-PDF_ROTATED_TEXT_DROPPED = "pdf.rotated_text_dropped"
-PDF_FURNITURE_REMOVED = "pdf.furniture_removed"
-PDF_OCR_APPLIED = "pdf.ocr_applied"
-PDF_OCR_LOW_CONFIDENCE = "pdf.ocr_low_confidence"
-PDF_OCR_UNAVAILABLE = "pdf.ocr_unavailable"
 # Tesseract languages, tried together (ADR-017); override with TOMD_OCR_LANG.
 DEFAULT_OCR_LANGUAGES = "spa+eng"
 
@@ -250,14 +255,27 @@ class HeuristicBackend:
         layout = analyze_layout(path, self.config, self.ocr, engine)
         source = path.name
 
-        def report(code: str, severity: Severity, message: str, page: int | None = None) -> None:
-            diagnostics.append(Diagnostic(code, severity, message, Provenance(source, page=page)))
+        def report(code: str, message: str, page: int | None = None) -> None:
+            diagnostics.append(diagnose(code, message, Provenance(source, page=page)))
 
         if meta.encrypted:
-            report(PDF_PERMISSIONS_RESTRICTED, "info", "PDF has permission restrictions.")
-        images = 0
+            report(PDF_PERMISSIONS_RESTRICTED, "Permission flags (copy, print) ignored.")
+        unreadable = [p.number for p in layout.pages if p.unreadable]
+        if unreadable and len(unreadable) == len(layout.pages):
+            raise UnreadableInputError(
+                f"No page of {source} could be read: the file is damaged. Re-export it from "
+                "its source or repair it (`qpdf in.pdf out.pdf`)."
+            )
+        for number in (p.number for p in layout.pages if p.empty and not p.unreadable):
+            report(PDF_PAGE_EMPTY, f"Page {number} has no content.", number)
+        for number in unreadable:
+            report(
+                PDF_PAGE_UNREADABLE, f"Page {number} could not be loaded; it is missing.", number
+            )
+        lost_images = small_images = 0
         for page in layout.pages:
-            images += page.image_count
+            lost_images += page.image_count
+            small_images += page.small_image_count
             if page.number in layout.ocr_confidence:
                 confidence = layout.ocr_confidence[page.number]
                 scanned = layout.ocr_pages[page.number]
@@ -266,10 +284,11 @@ class HeuristicBackend:
                     fixes.append(f"turned {90 * scanned.quarter_turns}° clockwise")
                 if scanned.skew:
                     fixes.append(f"deskewed by {scanned.skew:.1f}°")
+                if scanned.dpi < self.config.ocr_dpi:
+                    fixes.append(f"page too large, read at {scanned.dpi} dpi")
                 report(
                     PDF_OCR_APPLIED,
-                    "info",
-                    f"Text recognised by OCR (mean confidence {confidence:.2f}"
+                    f"Page {page.number} read by OCR (mean confidence {confidence:.2f}"
                     + "".join(f"; {fix}" for fix in fixes)
                     + ").",
                     page.number,
@@ -277,60 +296,61 @@ class HeuristicBackend:
                 if confidence < self.config.ocr_min_confidence:
                     report(
                         PDF_OCR_LOW_CONFIDENCE,
-                        "warning",
-                        f"OCR confidence {confidence:.2f} is low; check the text.",
+                        f"Page {page.number}: mean OCR confidence {confidence:.2f} "
+                        f"(threshold {self.config.ocr_min_confidence:.2f}).",
                         page.number,
                     )
                 continue
             if page.number in layout.ocr_missing and self.ocr is not OcrMode.NEVER:
                 report(
                     PDF_OCR_UNAVAILABLE,
-                    "warning",
-                    "Page needs OCR but Tesseract or its language data is missing (ADR-017).",
+                    f"Page {page.number} needs OCR, but Tesseract or its language data "
+                    f"({os.environ.get('TOMD_OCR_LANG') or DEFAULT_OCR_LANGUAGES}) is missing.",
                     page.number,
                 )
-            has_image = page.image_count or any(f.page == page.number for f in layout.figures)
+            has_image = (
+                page.image_count
+                or page.small_image_count
+                or any(f.page == page.number for f in layout.figures)
+            )
             if page.char_count < _MIN_TEXT_CHARS and has_image:
                 report(
-                    PDF_NO_TEXT_LAYER, "warning", "Page has no text layer; needs OCR.", page.number
+                    PDF_NO_TEXT_LAYER,
+                    f"Page {page.number} is an image without a text layer; its text is missing.",
+                    page.number,
                 )
             elif (
                 page.char_count and page.garbage_count / page.char_count > self.config.garbage_ratio
             ):
+                share = page.garbage_count / page.char_count
                 report(
                     PDF_GARBAGE_TEXT,
-                    "warning",
-                    "Extracted text is garbage; needs OCR.",
+                    f"Page {page.number}: {share:.0%} of the extracted characters are garbage.",
                     page.number,
                 )
         rotated = sum(p.rotated_count for p in layout.pages)
         if rotated:
-            report(
-                PDF_ROTATED_TEXT_DROPPED,
-                "info",
-                f"{rotated} rotated character(s) dropped (margin stamps, rotated labels).",
-            )
+            report(PDF_ROTATED_TEXT_DROPPED, f"{rotated} rotated character(s) dropped.")
         if layout.furniture_removed:
             report(
                 PDF_FURNITURE_REMOVED,
-                "info",
                 f"{layout.furniture_removed} repeated header/footer line(s) removed.",
             )
         for number in layout.uncertain_pages:
             report(
                 codes.PDF_READING_ORDER_UNCERTAIN,
-                "warning",
-                "Ambiguous column layout; reading order is a best guess.",
+                f"Page {number}: ambiguous columns; the reading order is a best guess.",
                 number,
             )
-        if images:
+        if lost_images:
             report(
                 codes.IMAGE_DROPPED,
-                "info",
-                f"{images} image(s) too small to be figures, or unreadable, dropped.",
+                f"{lost_images} image(s) unreadable or too large to decode safely, dropped.",
             )
+        if small_images:
+            report(codes.IMAGE_SKIPPED_SMALL, f"{small_images} small image(s) skipped.")
         if any(p.has_struct_tree for p in layout.pages):
-            report(PDF_STRUCT_TREE_IGNORED, "info", "Tagged PDF structure tree not used yet.")
+            report(PDF_STRUCT_TREE_IGNORED, "Structure tree (tags) ignored; layout inferred.")
 
         heights = {p.number: p.height for p in layout.pages}
         body, notes, note_diagnostics = link_footnotes(
@@ -413,7 +433,12 @@ def _build_blocks(
                 out.append(Paragraph(tuple(inlines), prov))
         if prov.confidence < cfg.min_confidence:
             diagnostics.append(
-                Diagnostic(PDF_LOW_CONFIDENCE, "info", f"Low-confidence {c.kind.value}.", prov)
+                diagnose(
+                    PDF_LOW_CONFIDENCE,
+                    f"Page {prov.page}: {c.kind.value} classified with confidence "
+                    f"{prov.confidence:.2f}.",
+                    prov,
+                )
             )
     flush_list()
     return out, title, list(assets.values())

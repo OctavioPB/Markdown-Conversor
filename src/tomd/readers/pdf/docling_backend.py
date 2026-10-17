@@ -33,6 +33,7 @@ from tomd.ir import (
     Text,
 )
 from tomd.ir import diagnostics as codes
+from tomd.ir.diagnostics import diagnose
 from tomd.readers.pdf.classify import NUMBERED_HEADING
 
 # docling labels whose content is page furniture, not text flow.
@@ -125,9 +126,7 @@ def _to_ir(dl: Any, path: Path) -> Document:
                     blocks.append(MathBlock(item.text, prov))
                 else:
                     diagnostics.append(
-                        Diagnostic(
-                            codes.MATH_UNRECOVERABLE, "warning", "Formula without LaTeX.", prov
-                        )
+                        diagnose(codes.MATH_UNRECOVERABLE, "Formula without LaTeX.", prov)
                     )
             case "table":
                 blocks.append(_table(item, dl, prov))
@@ -190,7 +189,7 @@ def _picture(
     caption = _caption(item, dl)
     pil = item.get_image(dl) if hasattr(item, "get_image") else None
     if pil is None:
-        diagnostics.append(Diagnostic(codes.IMAGE_DROPPED, "info", "Picture not rendered.", prov))
+        diagnostics.append(diagnose(codes.IMAGE_DROPPED, "Picture not rendered.", prov))
         return None
     buffer = io.BytesIO()
     pil.save(buffer, format="PNG")

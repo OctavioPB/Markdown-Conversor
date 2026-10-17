@@ -2,8 +2,9 @@
 
 from dataclasses import replace
 
-from tomd.ir import Block, Diagnostic, Document, FootnoteDef, FootnoteRef, Inline
+from tomd.ir import Block, Document, FootnoteDef, FootnoteRef, Inline
 from tomd.ir import diagnostics as codes
+from tomd.ir.diagnostics import diagnose
 from tomd.ir.walk import iter_inlines, map_block_children, map_inline_children
 
 
@@ -16,9 +17,8 @@ def renumber_footnotes(doc: Document) -> Document:
             body.append(block)
         elif block.key in defs:
             diagnostics.append(
-                Diagnostic(
+                diagnose(
                     codes.FOOTNOTE_DUPLICATE_DEFINITION,
-                    "warning",
                     f"Footnote {block.key!r} defined more than once; keeping the first.",
                     block.provenance,
                 )
@@ -48,18 +48,16 @@ def renumber_footnotes(doc: Document) -> Document:
 
     for key in missing:
         diagnostics.append(
-            Diagnostic(
+            diagnose(
                 codes.FOOTNOTE_MISSING_DEFINITION,
-                "warning",
                 f"Footnote reference {key!r} has no definition; reference dropped.",
             )
         )
     for key, fdef in defs.items():
         if key not in numbers:
             diagnostics.append(
-                Diagnostic(
+                diagnose(
                     codes.FOOTNOTE_ORPHAN_DEFINITION,
-                    "warning",
                     f"Footnote {key!r} is never referenced; definition dropped.",
                     fdef.provenance,
                 )

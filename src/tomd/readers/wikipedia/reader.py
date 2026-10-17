@@ -25,10 +25,15 @@ from tomd.ir import (
     Link,
     MathBlock,
     Paragraph,
+    Provenance,
     Row,
     Table,
 )
 from tomd.ir import diagnostics as codes
+from tomd.ir.diagnostics import (
+    WIKI_TEMPLATE_DROPPED,
+    diagnose,
+)
 from tomd.ir.walk import unwrap_emphasis
 from tomd.readers.html_common import (
     Element,
@@ -38,6 +43,7 @@ from tomd.readers.html_common import (
     classes,
     drop_handler,
     hoist_footnote_defs,
+    invalid_utf8_count,
     parse_html,
     promote_lone_math,
     strip_displaystyle,
@@ -49,7 +55,6 @@ from tomd.readers.wikipedia.client import ArticleRef, WikimediaClient, parse_art
 
 LICENSE = "CC BY-SA 4.0"
 BACKEND = "parsoid"
-WIKI_TEMPLATE_DROPPED = "wiki.template_dropped"
 
 # Templates that carry navigation or maintenance, not article content.
 _DROPPED_CLASSES = {
@@ -130,7 +135,7 @@ def _math_block(el: Element, m: HtmlMapper) -> list[Block]:
 def _math_inline(el: Element, m: HtmlMapper) -> list[Inline]:
     tex = _math_tex(el)
     if tex is None:
-        m.report(codes.MATH_UNRECOVERABLE, "Formula without recoverable LaTeX.", "warning")
+        m.report(codes.MATH_UNRECOVERABLE, "Formula without recoverable LaTeX.")
         return []
     return [InlineMath(tex)]
 
@@ -377,7 +382,17 @@ def read_parsoid_html(data: bytes, *, fallback: ArticleRef | None = None) -> Doc
         license=LICENSE,
         revision_id=_revision_id(root),
     )
-    return Document(meta, tuple(blocks), (), tuple(mapper.diagnostics))
+    diagnostics = list(mapper.diagnostics)
+    invalid = invalid_utf8_count(data)
+    if invalid:
+        diagnostics.append(
+            diagnose(
+                codes.TEXT_INVALID_UNICODE,
+                f"{invalid} invalid UTF-8 sequence(s) in the HTML replaced by U+FFFD.",
+                Provenance(canonical),
+            )
+        )
+    return Document(meta, tuple(blocks), (), tuple(diagnostics))
 
 
 def _canonical_url(head: Element | None, fallback: ArticleRef | None) -> str:

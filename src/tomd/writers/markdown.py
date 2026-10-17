@@ -39,6 +39,7 @@ from tomd.ir import (
     ThematicBreak,
 )
 from tomd.ir import diagnostics as codes
+from tomd.ir.diagnostics import diagnose
 from tomd.ir.walk import unwrap_emphasis
 
 
@@ -551,9 +552,8 @@ class _Writer:
         if invalid:  # lone UTF-16 halves cannot be written as UTF-8 (M01)
             markdown = _SURROGATES.sub(_REPLACEMENT, markdown)
             self.diagnostics.append(
-                Diagnostic(
+                diagnose(
                     codes.TEXT_INVALID_UNICODE,
-                    "warning",
                     f"{invalid} invalid character(s) replaced by U+FFFD.",
                 )
             )
@@ -660,9 +660,8 @@ class _Writer:
         asset = self.assets.get(image.src_asset)
         if asset is None:
             self.diagnostics.append(
-                Diagnostic(
+                diagnose(
                     codes.IMAGE_DROPPED,
-                    "warning",
                     f"Image asset {image.src_asset[:12]!r} not found; caption kept.",
                     image.provenance,
                 )
@@ -676,18 +675,15 @@ class _Writer:
         caption = self.caption(table.caption)
         if not table.header_rows and not table.body_rows:
             self.diagnostics.append(
-                Diagnostic(
-                    codes.TABLE_EMPTY_DROPPED, "info", "Empty table dropped.", table.provenance
-                )
+                diagnose(codes.TABLE_EMPTY_DROPPED, "Empty table dropped.", table.provenance)
             )
             return caption
         if is_gfm_table(table):
             rendered = self.gfm_table(table)
         else:
             self.diagnostics.append(
-                Diagnostic(
+                diagnose(
                     codes.TABLE_HTML_FALLBACK,
-                    "info",
                     "Table has spans, block content or several header rows; emitted as HTML.",
                     table.provenance,
                 )
@@ -699,9 +695,8 @@ class _Writer:
         header, body = table.header_rows, table.body_rows
         if not header:
             self.diagnostics.append(
-                Diagnostic(
+                diagnose(
                     codes.TABLE_HEADER_PROMOTED,
-                    "info",
                     "Table without header row; first row promoted to header.",
                     table.provenance,
                 )
