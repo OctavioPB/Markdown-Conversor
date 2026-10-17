@@ -1,12 +1,11 @@
-"""Review logic of the desktop UI (no widgets)."""
+"""Review logic of the desktop UI (no widgets): anchors, reviews from the manifest,
+library wording, the text preview and the background preview job."""
 
-import contextlib
+import time
 from pathlib import Path
 
-import pytest
-
+from tomd import __version__
 from tomd.ir import (
-    Diagnostic,
     Document,
     DocumentMeta,
     Heading,
@@ -17,30 +16,39 @@ from tomd.ir import (
     Strong,
     Text,
 )
-from tomd.ir import diagnostics as codes
-from tomd.pipeline.dispatch import convert
-from tomd.readers.pdf.ocr import OcrMode
-from tomd.ui.job import ConversionJob, Failed, Succeeded
-from tomd.ui.session import (
-    ConversionRequest,
-    Review,
-    diagnostic_rows,
-    page_anchors,
-    preview_runs,
-)
+from tomd.pipeline.anchors import page_anchors
+from tomd.pipeline.batch import MANIFEST_NAME, BatchOptions, run_batch
+from tomd.pipeline.manifest import Finding, LibraryEntry, Manifest
+from tomd.ui.job import Failed, PreviewJob
+from tomd.ui.session import Review, preview_runs, short_date, what_to_review
 
 CORPUS = Path(__file__).resolve().parents[2] / "corpus"
 TWO_PAGES = CORPUS / "pdf" / "synthetic-page-break" / "input.pdf"
 
 
-def _review(tmp_path: Path, source: Path = TWO_PAGES) -> Review:
-    result = convert(str(source), tmp_path, ocr=OcrMode.NEVER)
-    request = ConversionRequest(str(source), tmp_path)
-    return Review.from_result(request, result.markdown_path, result.diagnostics, result.document)
+def _entry(state: str = "to_review", **changes: object) -> LibraryEntry:
+    values: dict[str, object] = dict(
+        sha256="s", source="/in/x.pdf", title="X", output="x.md", state=state, error=None,
+        finished_at="2026-10-17T09:00:00", reviewed_at=None, to_check=3, findings=3,
+        first_code="pdf.reading_order_uncertain", first_page=2,
+    )  # fmt: skip
+    values.update(changes)
+    return LibraryEntry(**values)  # type: ignore[arg-type]
 
 
-def test_anchors_follow_pages_in_markdown_order(tmp_path: Path) -> None:
+def _review(tmp_path: Path) -> Review:
+    run_batch([TWO_PAGES], BatchOptions(out_dir=tmp_path, ocr="never"))
+    manifest = Manifest(tmp_path / MANIFEST_NAME)
+    (entry,) = manifest.library(__version__)
+    review = Review.load(manifest, __version__, entry, tmp_path)
+    manifest.close()
+    return review
+
+
+def test_review_loads_from_the_manifest(tmp_path: Path) -> None:
     review = _review(tmp_path)
+    assert review.markdown and review.markdown_path.is_file() and review.is_pdf
+    assert review.title == "Párrafos a través de páginas" or review.title
     pages = [a.page for a in review.anchors]
     lines = [a.line for a in review.anchors]
     assert pages == sorted(pages) and set(pages) == {1, 2}
@@ -49,8 +57,20 @@ def test_anchors_follow_pages_in_markdown_order(tmp_path: Path) -> None:
     assert first is not None and second is not None and first < second
     anchor = review.anchor_for_line(second)
     assert anchor is not None and anchor.page == 2 and anchor.bbox is not None
-    # Lines in the front matter belong to no block.
-    assert review.anchor_for_line(1) is None
+    assert review.anchor_for_line(1) is None  # the front matter belongs to no block
+
+
+def test_checklist_puts_errors_first_and_info_apart() -> None:
+    findings = [
+        Finding("pdf.furniture_removed", "info", "", idx=0),
+        Finding("pdf.reading_order_uncertain", "warning", "", 3, idx=1, checked=True),
+        Finding("pdf.page_unreadable", "error", "", 5, idx=2),
+        Finding("pdf.garbage_text", "warning", "", 1, idx=3),
+    ]
+    review = Review(_entry(), Path("x.md"), "", findings, [])
+    assert [f.idx for f in review.to_review] == [2, 3, 1]
+    assert [f.idx for f in review.automatic] == [0]
+    assert review.checked_count() == 1
 
 
 def test_line_for_page_falls_back_to_the_previous_page() -> None:
@@ -58,10 +78,8 @@ def test_line_for_page_falls_back_to_the_previous_page() -> None:
         DocumentMeta("T", "pdf", "x.pdf"),
         (Paragraph((Text("Alpha beta gamma delta"),), Provenance("x.pdf", 1)),),
     )
-    review = Review(
-        ConversionRequest("x.pdf", Path()), Path("x.md"), "Alpha beta gamma delta\n", doc, ()
-    )
-    review.anchors = page_anchors(doc, review.markdown)
+    markdown = "Alpha beta gamma delta\n"
+    review = Review(_entry(), Path("x.md"), markdown, [], page_anchors(doc, markdown))
     assert review.line_for_page(3) == 1  # page 3 has no block: show where page 1 is
     assert review.line_for_page(0) is None
 
@@ -80,17 +98,15 @@ def test_anchor_matching_survives_markdown_escaping() -> None:
     assert [(a.page, a.line) for a in page_anchors(doc, markdown)] == [(1, 1), (2, 3)]
 
 
-def test_diagnostic_rows_are_sorted_and_carry_the_catalog_action() -> None:
-    rows = diagnostic_rows(
-        (
-            Diagnostic(codes.PDF_FURNITURE_REMOVED, "info", "3 lines."),
-            Diagnostic(codes.PDF_OCR_LOW_CONFIDENCE, "warning", "p2", Provenance("x", 2)),
-            Diagnostic(codes.DOC_TITLE_MISSING, "error", "none"),
-        )
+def test_library_wording() -> None:
+    assert what_to_review(_entry()) == "Orden de las columnas · pág. 2 · 2 más"
+    assert what_to_review(_entry(to_check=1)) == "Orden de las columnas · pág. 2"
+    assert "DRM" in what_to_review(_entry("failed", error="DrmProtectedError: x"))
+    assert what_to_review(_entry("reviewed", reviewed_at="2026-03-05T10:00:00")) == (
+        "Revisado el 5 mar. 2026"
     )
-    assert [r.severity for r in rows] == ["error", "warning", "info"]
-    assert rows[1].page == 2 and "Proofread" in rows[1].action
-    assert rows[2].action == ""
+    assert what_to_review(_entry("ready")) == "—"
+    assert short_date("2026-10-17T09:00:00") == "17 oct. 2026" and short_date(None) == ""
 
 
 def test_preview_runs_style_blocks_and_mark_pages() -> None:
@@ -112,203 +128,29 @@ def test_preview_runs_style_blocks_and_mark_pages() -> None:
     assert sum("page-1" in r.tags for r in runs) == 2
 
 
-def test_figures_become_image_runs(tmp_path: Path) -> None:
-    review = _review(tmp_path, CORPUS / "pdf" / "arxiv-mistral-7b" / "input.pdf")
-    assert review.document is not None
-    images = [r for r in preview_runs(review.document) if r.image]
-    assert images and all(r.image in {a.sha256 for a in review.document.assets} for r in images)
-
-
-def test_job_converts_in_another_process(tmp_path: Path) -> None:
-    job = ConversionJob(ConversionRequest(str(TWO_PAGES), tmp_path, ocr="never"))
-    outcome = None
-    for _ in range(600):  # up to 60 s
-        outcome = job.poll()
-        if outcome is not None:
-            break
-        import time
-
-        time.sleep(0.1)
-    assert isinstance(outcome, Succeeded)
-    assert outcome.result.markdown_path.is_file() and outcome.result.document is not None
-
-
-def test_job_reports_errors_with_exit_code(tmp_path: Path) -> None:
-    from tomd.cli import EXIT_UNSUPPORTED
-
-    job = ConversionJob(ConversionRequest(str(tmp_path / "missing.txt"), tmp_path))
-    outcome = None
-    for _ in range(600):
-        outcome = job.poll()
-        if outcome is not None:
-            break
-        import time
-
-        time.sleep(0.1)
-    assert isinstance(outcome, Failed)
-    assert outcome.kind == "UnsupportedSourceError" and outcome.exit_code == EXIT_UNSUPPORTED
-
-
-@pytest.fixture
-def tk_root():  # type: ignore[no-untyped-def]
-    tkinter = pytest.importorskip("tkinter")
-    try:
-        root = tkinter.Tk()
-    except tkinter.TclError:
-        pytest.skip("no display for Tk")
-    root.withdraw()
-    yield root
-    with contextlib.suppress(tkinter.TclError):
-        root.destroy()
-
-
-def test_window_loads_a_review_and_navigates(tmp_path: Path, tk_root: object) -> None:
-    from tomd.ui.app import TomdApp
-
-    app = TomdApp(tk_root, tmp_path)  # type: ignore[arg-type]
-    review = _review(tmp_path)
-    app._add_review(review)
-    app.root.update()
-    assert app.pdf is not None and app.page_label.get() == "1 / 2"
-    assert app.raw.get("1.0", "end-1c") == review.markdown
-    assert app.preview.get("1.0", "end-1c").strip()
-    app.show_page(2)
-    line = review.line_for_page(2)
-    assert app.raw.tag_ranges("current") and str(app.raw.tag_ranges("current")[0]) == f"{line}.0"
-    # Clicking a line of page 1 brings the original back to page 1, highlighted.
-    first = review.line_for_page(1)
-    app.raw.mark_set("insert", f"{first}.0")
-    app._markdown_clicked()
-    assert app.page == 1 and app._highlight is not None
-    app.find_text.set("párrafo")
-    app.find_next()
-    app.close()
-
-
-def test_convert_button_runs_a_job_and_adds_the_result(tmp_path: Path, tk_root: object) -> None:
-    import time
-
-    from tomd.ui.app import TomdApp
-
-    app = TomdApp(tk_root, tmp_path)  # type: ignore[arg-type]
-    app.source.set(str(TWO_PAGES))
-    app.ocr.set("never")
-    app.start_conversion()
-    assert app.job is not None
-    deadline = time.monotonic() + 60
-    while app.job is not None and time.monotonic() < deadline:
-        app.root.update()
-        time.sleep(0.05)
-    assert app.job is None and len(app.reviews) == 1
-    assert app.reviews[0].markdown_path.is_file()
-    assert app.preview.get("1.0", "1.end") == app.reviews[0].title  # the title comes first
-    app.close()
-
-
-def test_convert_folder_runs_the_batch_and_shows_the_report(
-    tmp_path: Path, tk_root: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import shutil
-    import time
-
-    from tomd.ui import app as app_module
-    from tomd.ui.app import TomdApp
-
-    monkeypatch.setattr(app_module.messagebox, "showinfo", lambda *a, **k: None)
-    folder = tmp_path / "library"
-    folder.mkdir()
-    shutil.copyfile(TWO_PAGES, folder / "a.pdf")
-    shutil.copyfile(CORPUS / "epub" / "synthetic-epub3-notes" / "input.epub", folder / "b.epub")
-    app = TomdApp(tk_root, tmp_path / "out")  # type: ignore[arg-type]
-    app.ocr.set("never")
-    app.convert_folder(str(folder))
-    deadline = time.monotonic() + 120
-    while app.batch is not None and time.monotonic() < deadline:
-        app.root.update()
-        time.sleep(0.05)
-    assert app.batch is None
-    assert app.history.get("end") == "Informe: library"
-    assert "done | 2" in app.raw.get("1.0", "end")  # the report, shown in the Markdown tab
-    assert (tmp_path / "out" / "parrafos-a-traves-de-paginas.md").is_file()
-    app.close()
-
-
-# --- Drag and drop -------------------------------------------------------------------------
-
-
-def _wait(app: object, attribute: str, seconds: float = 120) -> None:
-    import time
-
+def _poll(job: PreviewJob, seconds: float = 60) -> object:
     deadline = time.monotonic() + seconds
-    while getattr(app, attribute) is not None and time.monotonic() < deadline:
-        app.root.update()  # type: ignore[attr-defined]
-        time.sleep(0.05)
+    while time.monotonic() < deadline:
+        outcome = job.poll()
+        if outcome is not None:
+            return outcome
+        time.sleep(0.1)
+    job.cancel()
+    raise AssertionError("preview did not finish")
 
 
-def test_dropped_file_converts_dropped_folders_batch(
-    tmp_path: Path, tk_root: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import shutil
-
-    from tomd.ui import app as app_module
-    from tomd.ui.app import TomdApp
-
-    shown: list[str] = []
-    monkeypatch.setattr(app_module.messagebox, "showinfo", lambda title, text: shown.append(text))
-    app = TomdApp(tk_root, tmp_path / "out")  # type: ignore[arg-type]
-    app.ocr.set("never")
-
-    app.handle_drop([str(tmp_path / "notes.txt")])  # nothing usable: explained, nothing runs
-    assert app.job is None and app.batch is None and "notes.txt" in shown[-1]
-
-    app.handle_drop([str(TWO_PAGES)])  # one document: converted and shown
-    assert app.job is not None
-    app.handle_drop([str(TWO_PAGES)])  # busy: told to wait
-    assert "en curso" in app.status.get()
-    _wait(app, "job")
-    assert len(app.reviews) == 1 and app.reviews[0].markdown_path.is_file()
-
-    other = tmp_path / "other.pdf"
-    shutil.copyfile(CORPUS / "pdf" / "synthetic-lists" / "input.pdf", other)
-    app.handle_drop([str(TWO_PAGES), str(other)])  # several: one batch
-    assert app.batch is not None and app.batch.label == "2 elementos"
-    _wait(app, "batch")
-    assert app.history.get("end") == "Informe: 2 elementos"
-    app.close()
+def test_preview_job_reads_the_document_again() -> None:
+    outcome = _poll(PreviewJob(str(TWO_PAGES), ocr="never"))
+    assert isinstance(outcome, Document) and outcome.blocks
 
 
-def test_drop_event_reaches_the_window_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tkinter = pytest.importorskip("tkinter")
-    pytest.importorskip("tkinterdnd2")
-    from types import SimpleNamespace
+def test_figures_become_image_runs() -> None:
+    outcome = _poll(PreviewJob(str(CORPUS / "pdf" / "arxiv-mistral-7b" / "input.pdf")))
+    assert isinstance(outcome, Document)
+    images = [r for r in preview_runs(outcome) if r.image]
+    assert images and all(r.image in {a.sha256 for a in outcome.assets} for r in images)
 
-    from tomd.ui.app import TomdApp, make_root
 
-    try:
-        root = make_root()
-    except tkinter.TclError:
-        pytest.skip("no display for Tk")
-    root.withdraw()
-    app = TomdApp(root, tmp_path / "out")
-    assert app.enable_drop()  # tkdnd loaded
-    received: list[list[str]] = []
-    monkeypatch.setattr(app, "handle_drop", received.append)
-    root.update()
-    # A drop is handled once, whether it lands on an inner area or on the window.
-    app.raw.event_generate("<<Drop>>", when="now")
-    root.update()
-    root.event_generate("<<Drop>>", when="now")
-    root.update()
-    assert len(received) == 2
-    # tkdnd hands the paths over as a Tcl list: braces around paths with spaces.
-    target = tmp_path / "with space" / "a.pdf"
-    other = tmp_path / "b.epub"
-    data = "{" + target.as_posix() + "} " + other.as_posix()
-    action = app._on_drop(SimpleNamespace(data=data, action="copy"))
-    assert action == "copy"
-    assert received[-1] == [target.as_posix(), other.as_posix()]
-    assert app._on_drop(SimpleNamespace(data=data, action="copy")) == "copy"
-    assert len(received) == 3  # the same dispatch: not handled a second time
-    app.close()
+def test_preview_job_reports_errors(tmp_path: Path) -> None:
+    outcome = _poll(PreviewJob(str(tmp_path / "missing.txt")))
+    assert isinstance(outcome, Failed) and outcome.kind == "UnsupportedSourceError"

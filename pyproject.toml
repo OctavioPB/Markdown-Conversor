@@ -54,6 +54,10 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PTH"]
 [tool.ruff.lint.per-file-ignores]
 # The PDF reader handles typographic characters (dashes, bullets, ×) by design.
 "src/tomd/readers/pdf/*" = ["RUF001", "RUF002", "RUF003"]
+# Interface copy: whole sentences, never split to fit a line.
+"src/tomd/ui/texts.py" = ["E501"]
+# Interface symbols on purpose: ‹ › for back/next, − × in controls and counts.
+"src/tomd/ui/*" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

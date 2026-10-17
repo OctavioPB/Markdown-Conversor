@@ -31,6 +31,7 @@ Los textos de cada código están en inglés, como los mensajes del programa.
 | `pdf.ocr_unavailable` | warning | A page needs OCR but Tesseract or its language data was not found; the page's text is missing or garbage. | Install Tesseract and the spa/eng language data (README, section OCR), or point TOMD_TESSERACT and TOMD_TESSDATA at them, then convert again. |
 | `pdf.page_unreadable` | warning | A page could not be loaded (damaged page object); its content is missing. | Re-export the PDF from its source, or repair it (`qpdf in.pdf out.pdf`), and convert again. |
 | `pdf.reading_order_uncertain` | warning | The column layout of a page is ambiguous; paragraphs may be out of order. | Check the paragraph order of that page against the source. |
+| `pdf.table_not_reconstructed` | warning | Something on the page looks like a table (a table caption, or rows aligned in columns) but it was not rebuilt with confidence; its content stays as paragraphs and the row and column structure is lost. | Compare that page with the source. If the table matters, convert with `--backend docling` or copy it by hand. |
 | `text.invalid_unicode` | warning | The source contains invalid characters (broken UTF-8, lone surrogates); each was replaced by U+FFFD. | The source file is damaged: obtain a fresh copy (fetch the article again). |
 | `epub.boilerplate_dropped` | info | Distributor boilerplate (e.g. the Project Gutenberg header and license) was removed. | — |
 | `epub.cover_skipped` | info | The cover page (only the cover image) was left out of the text. | — |

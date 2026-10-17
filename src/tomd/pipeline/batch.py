@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from tomd import __version__
-from tomd.pipeline.manifest import Manifest, Task
+from tomd.pipeline.manifest import Finding, Manifest, Task
 
 SUFFIXES = frozenset({".pdf", ".epub"})
 MANIFEST_NAME = "manifest.sqlite"
@@ -119,6 +119,7 @@ def _worker_main(conn: Connection, memory_mb: int, backend: str, ocr: str) -> No
     """Convert documents sent by the parent until told to stop."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl+C is the parent's to handle
     from tomd.errors import DrmProtectedError, TomdError
+    from tomd.pipeline.anchors import page_anchors
     from tomd.pipeline.dispatch import prepare_document, read_source
     from tomd.pipeline.limits import apply_memory_limit, peak_memory_mb
     from tomd.readers.pdf.ocr import OcrMode
@@ -140,10 +141,17 @@ def _worker_main(conn: Connection, memory_mb: int, backend: str, ocr: str) -> No
             conn.send(("slug", slug))
             final = conn.recv()[1]
             result = render_markdown(doc, slug=final)
-            diagnostics = [(d.code, d.severity) for d in result.diagnostics]
+            diagnostics = [
+                (d.code, d.severity, d.message,
+                 d.provenance.page if d.provenance else None,
+                 d.provenance.bbox if d.provenance else None)
+                for d in result.diagnostics
+            ]  # fmt: skip
+            anchors = [(a.page, a.line, a.bbox) for a in page_anchors(doc, result.text)]
             conn.send(
-                ("done", result.text, doc.assets, diagnostics, doc.meta.title, peak_memory_mb())
-            )
+                ("done", result.text, doc.assets, diagnostics, anchors, doc.meta.title,
+                 peak_memory_mb())
+            )  # fmt: skip
         except MemoryError:
             conn.send(("error", "memory", "Memory limit exceeded.", peak_memory_mb()))
             return  # leave with a clean heap: the parent starts a new worker
@@ -339,12 +347,14 @@ def _receive(
         worker.conn.send(("slug", manifest.claim_slug(message[1], task.sha256)))
         return None
     if kind == "done":
-        _, text, assets, diagnostics, title, peak = message
+        _, text, assets, diagnostics, anchors, title, peak = message
         slug = manifest.claim_slug("", task.sha256)  # already claimed: returns the record
         path = write_output(options.out_dir, slug, text, assets)
-        counts = Counter((code, severity) for code, severity in diagnostics)
+        counts = Counter((code, severity) for code, severity, *_ in diagnostics)
+        findings = [Finding(c, s, m, p, b) for c, s, m, p, b in diagnostics]
         manifest.finished(task, version, status="done", duration_s=elapsed, peak_mb=peak,
-                          output=path.name, title=title, diagnostics=dict(counts))  # fmt: skip
+                          output=path.name, title=title, diagnostics=dict(counts),
+                          findings=findings, anchors=anchors)  # fmt: skip
         warnings = sum(n for (_, sev), n in counts.items() if sev != "info")
         return "done", f"{warnings} warning(s)" if warnings else ""
     _, status, error, peak = message

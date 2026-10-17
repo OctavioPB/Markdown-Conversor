@@ -1,9 +1,12 @@
-"""Tables from ruling grids (§9, strategy 1).
+"""Tables (§9): from ruling grids (strategy 1), from horizontal rules alone or from
+column alignment (strategy 2).
 
 Rules that intersect form a grid; a missing interior rule between two grid cells means a
-spanned cell. Characters inside the grid fill its cells and leave the text flow. Tables
-without rules are not detected here (§9 strategy 2 is not implemented): their text flows
-as paragraphs, a documented limit of the heuristic backend.
+spanned cell. Characters inside the grid fill its cells and leave the text flow. Without
+vertical rules, columns come from gaps that every row shares. A run of rows that looks
+tabular but is not rebuilt with confidence stays as text and is reported as a suspect
+(strategy 3): losing a table's structure is better than inventing a false one. Spanned
+cells without rules are not inferred (a documented limit; `--backend docling`).
 """
 
 import re
@@ -229,17 +232,27 @@ def find_rule_tables(
     return tables, remaining
 
 
+@dataclass(frozen=True, slots=True)
+class TableSuspect:
+    """Rows that look like a table but were left as text (§9 strategy 3)."""
+
+    page: int
+    bbox: tuple[float, float, float, float]
+    rows: int
+
+
 def find_aligned_tables(
     rows: "list[list[list[Char]]]",
     page: int,
     source: str,
     cfg: PdfHeuristicsConfig,
-) -> tuple[list[PdfTable], "list[list[list[Char]]]"]:
+) -> tuple[list[PdfTable], "list[list[list[Char]]]", list[TableSuspect]]:
     """Tables without any rule: runs of consecutive rows split into short parts that share
-    column gaps (§9.2). Two-column body text never qualifies: its lines are long."""
+    column gaps (§9.2). Two-column body text never qualifies: its lines are long. Long
+    aligned runs that are not rebuilt come back as suspects."""
     visible = [c for row in rows for part in row for c in part if not c.is_space]
     if not visible:
-        return [], rows
+        return [], rows, []
     width = max(c.x1 for c in visible) - min(c.x0 for c in visible)
 
     def candidate(row: list[list[Char]]) -> bool:
@@ -250,7 +263,9 @@ def find_aligned_tables(
         )
 
     tables: list[PdfTable] = []
+    suspects: list[TableSuspect] = []
     keep: list[list[list[Char]]] = []
+    reported_until = 0
     i = 0
     while i < len(rows):
         run = [rows[i]] if candidate(rows[i]) else []
@@ -260,11 +275,6 @@ def find_aligned_tables(
             j += 1
         if len(run) >= cfg.aligned_min_rows:
             flat = [[c for part in row for c in part] for row in run]
-            header = 1 if all(c.bold for c in flat[0] if not c.is_space) else 0
-            if not (header or _looks_tabular(run)):
-                keep.append(rows[i])
-                i += 1
-                continue
             xs = [c for row in flat for c in row]
             bbox = (
                 min(c.x0 for c in xs),
@@ -272,14 +282,22 @@ def find_aligned_tables(
                 max(c.x1 for c in xs),
                 max(c.top for c in xs),
             )
-            table = _table_from_rows(flat, header, page, bbox, source, cfg, 0.7)
+            header = 1 if all(c.bold for c in flat[0] if not c.is_space) else 0
+            table = None
+            if header or _looks_tabular(run):
+                table = _table_from_rows(flat, header, page, bbox, source, cfg, 0.7)
             if table is not None:
                 tables.append(table)
                 i = j
                 continue
+            # Rejected: a later row may still start a table, so go on row by row, but
+            # report the run once (not again for each of its tails).
+            if len(run) >= cfg.table_suspect_min_rows and i >= reported_until:
+                suspects.append(TableSuspect(page, bbox, len(run)))
+                reported_until = j
         keep.append(rows[i])
         i += 1
-    return tables, keep
+    return tables, keep, suspects
 
 
 def _looks_tabular(run: list[list[list[Char]]]) -> bool:

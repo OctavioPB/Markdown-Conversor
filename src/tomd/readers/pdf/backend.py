@@ -57,7 +57,7 @@ from tomd.readers.pdf.classify import (
 )
 from tomd.readers.pdf.config import DEFAULT_CONFIG, PdfHeuristicsConfig
 from tomd.readers.pdf.extract import iter_pages, open_pdf, read_metadata
-from tomd.readers.pdf.figures import PlacedFloat, place_floats
+from tomd.readers.pdf.figures import PlacedFloat, orphan_table_captions, place_floats
 from tomd.readers.pdf.footnotes import link_footnotes
 from tomd.readers.pdf.furniture import remove_furniture
 from tomd.readers.pdf.lines import rejoin_rows, rows_to_lines, split_rows
@@ -73,6 +73,7 @@ from tomd.readers.pdf.ocr import (
 from tomd.readers.pdf.order import order_lines
 from tomd.readers.pdf.tables import (
     PdfTable,
+    TableSuspect,
     build_tables,
     find_aligned_tables,
     find_grids,
@@ -114,6 +115,7 @@ class LayoutResult:
     uncertain_pages: list[int] = field(default_factory=list)
     figures: list[PdfFigure] = field(default_factory=list)
     tables: list[PdfTable] = field(default_factory=list)
+    table_suspects: list[TableSuspect] = field(default_factory=list)
     ocr_confidence: dict[int, float] = field(default_factory=dict)  # page -> mean confidence
     ocr_pages: dict[int, OcrPage] = field(default_factory=dict)
     ocr_missing: list[int] = field(default_factory=list)  # flagged pages left without OCR
@@ -167,8 +169,9 @@ def analyze_layout(
             result.tables.extend(tables)
             ruled, chars = find_rule_tables(content.rulings, chars, info.number, path.name, cfg)
             rows = split_rows(chars, cfg)
-            aligned, rows = find_aligned_tables(rows, info.number, path.name, cfg)
+            aligned, rows, suspects = find_aligned_tables(rows, info.number, path.name, cfg)
             result.tables.extend([*ruled, *aligned])
+            result.table_suspects.extend(suspects)
             result.lines[info.number] = rows_to_lines(rejoin_rows(rows, cfg), info.number, cfg)
     all_lines = [line for page in result.pages for line in result.lines[page.number]]
     result.stats = document_stats(all_lines, cfg)
@@ -199,6 +202,34 @@ def analyze_layout(
         [classify(b, result.stats, sizes, heights[b.page], cfg) for b in result.blocks]
     )
     return result
+
+
+def _report_lost_tables(
+    flow: list[Classified | PlacedFloat],
+    suspects: list[TableSuspect],
+    source: str,
+    diagnostics: list[Diagnostic],
+) -> None:
+    """§9 strategy 3: a table caption with no table, or aligned rows that were not
+    rebuilt, means a table left as text. One diagnostic per page, at the first place."""
+    places: dict[int, list[tuple[tuple[float, float, float, float], str]]] = {}
+    for caption in orphan_table_captions(flow):
+        label = (caption.text.strip().splitlines() or [""])[0][:40]
+        places.setdefault(caption.page, []).append((caption.bbox, f"caption «{label}»"))
+    for suspect in suspects:
+        places.setdefault(suspect.page, []).append(
+            (suspect.bbox, f"{suspect.rows} rows aligned in columns")
+        )
+    for page in sorted(places):
+        found = sorted(places[page], key=lambda p: -p[0][3])  # top of the page first
+        what = "; ".join(cue for _, cue in found)
+        diagnostics.append(
+            diagnose(
+                codes.PDF_TABLE_NOT_RECONSTRUCTED,
+                f"Page {page}: a table was left as text ({what}).",
+                Provenance(source, page, found[0][0]),
+            )
+        )
 
 
 def _in_tables(line: Line, tables: list[PdfTable]) -> bool:
@@ -359,6 +390,7 @@ class HeuristicBackend:
         diagnostics.extend(note_diagnostics)
         floats: list[PdfFigure | PdfTable] = [*layout.figures, *layout.tables]
         flow = place_floats(body, floats, layout.stats, self.config)
+        _report_lost_tables(flow, layout.table_suspects, source, diagnostics)
         blocks, title, assets = _build_blocks(flow, source, self.config, diagnostics)
         for note in notes:
             inlines, _ = block_inlines(note.block)

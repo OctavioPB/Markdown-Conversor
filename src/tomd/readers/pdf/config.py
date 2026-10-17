@@ -111,6 +111,10 @@ class PdfHeuristicsConfig:
     table_min_column_gap: float = 0.8
     # Rows further apart than this × their size end an aligned-table run.
     aligned_max_row_gap: float = 2.5
+    # An aligned run this long that is not rebuilt as a table is reported as a possible
+    # table left as text (§9 strategy 3). Higher than `aligned_min_rows` so that short
+    # pairs of lines (an address beside a date, two names) are not flagged.
+    table_suspect_min_rows: int = 4
 
     # --- Text quality (§7, §8) ---
     # Pages whose share of garbage characters exceeds this need OCR.

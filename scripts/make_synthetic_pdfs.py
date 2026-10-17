@@ -97,6 +97,11 @@ class C:
 class T:
     header: tuple[str, ...]
     rows: tuple[tuple[str, ...], ...]
+    # How the table is drawn (§9): "grid" (all cell borders), "booktabs" (horizontal rules
+    # above, under the header and below) or "aligned" (no lines at all; bold header).
+    style: str = "grid"
+    caption: str = ""  # drawn above the table; Markdown: italic paragraph before it
+    widths: tuple[float, ...] = ()  # column widths in cm; long cells wrap inside them
 
 
 @dataclass(frozen=True)
@@ -125,7 +130,9 @@ def to_markdown(nodes: list[Node]) -> str:
                 out.append("\n".join(_md_list(node, 0)))
             case C(code):
                 out.append("```\n" + code + "\n```")
-            case T(header, rows):
+            case T(header, rows, _, caption):
+                if caption:
+                    out.append(f"*{caption}*")
                 table = [header, tuple("---" for _ in header), *rows]
                 out.append("\n".join("| " + " | ".join(row) + " |" for row in table))
     return "\n\n".join(out) + "\n"
@@ -157,23 +164,49 @@ def _flowables(nodes: list[Node], styles: dict[str, ParagraphStyle] = SANS) -> l
                 out.append(_list_flowable(node, styles))
             case C(code):
                 out.append(Preformatted(code, CODE))
-            case T(header, rows):
-                grid = Table([list(header), *map(list, rows)], hAlign="LEFT")
-                grid.setStyle(
-                    TableStyle(
-                        [
-                            ("GRID", (0, 0), (-1, -1), 0.8, colors.black),
-                            ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-                            ("FONTSIZE", (0, 0), (-1, -1), 10.5),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                        ]
-                    )
-                )
-                out.append(grid)
+            case T():
+                if node.caption:
+                    out.append(Paragraph(node.caption, styles["body"]))
+                out.append(_table_flowable(node))
             case Break():
                 out.append(PageBreak())
     return out
+
+
+_CELL = ParagraphStyle("cell", fontName="Helvetica", fontSize=10.5, leading=13)
+_HEAD_CELL = ParagraphStyle("head-cell", parent=_CELL, fontName="Helvetica-Bold")
+
+
+def _table_flowable(node: T) -> Table:
+    if node.widths:  # fixed columns: cells are paragraphs, so long text wraps
+        head = _HEAD_CELL if node.style == "aligned" else _CELL
+        data: list[list[Any]] = [
+            [Paragraph(text, head) for text in node.header],
+            *[[Paragraph(text, _CELL) for text in row] for row in node.rows],
+        ]
+        table = Table(data, colWidths=[w * cm for w in node.widths], hAlign="LEFT")
+    else:
+        table = Table([list(node.header), *map(list, node.rows)], hAlign="LEFT")
+    common: list[Any] = [
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
+        ("FONTSIZE", (0, 0), (-1, -1), 10.5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]
+    match node.style:
+        case "grid":
+            lines: list[Any] = [("GRID", (0, 0), (-1, -1), 0.8, colors.black)]
+        case "booktabs":
+            lines = [
+                ("LINEABOVE", (0, 0), (-1, 0), 1.0, colors.black),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.6, colors.black),
+                ("LINEBELOW", (0, -1), (-1, -1), 1.0, colors.black),
+            ]
+        case _:  # aligned: no lines, the header in bold
+            lines = [("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold")]
+    table.setStyle(TableStyle(common + lines))
+    return table
 
 
 def _list_flowable(lst: L, styles: dict[str, ParagraphStyle] = SANS) -> ListFlowable:
@@ -505,6 +538,51 @@ def scan_two_columns() -> tuple[list[Node], bytes]:
     return nodes, scan_pdf(digital, Scan(dpi=200, skew=-0.5, noise=0.0002, bilevel=True), 6)
 
 
+def case_tables() -> tuple[list[Node], bytes]:
+    """Tables without a full grid (§9.2): booktabs rules with a wrapped cell, columns
+    aligned with a bold header, and a sentence that cites a table without being its
+    caption (it must stay a paragraph)."""
+    nodes: list[Node] = [
+        H(1, "Reservoir monitoring report"),
+        P(
+            "This report summarises the monitoring campaign of the three reservoirs in the "
+            "upper basin. Table 1 lists the stations and Table 2 the readings of the last "
+            "quarter; both were checked against the field notebooks."
+        ),
+        T(
+            ("Station", "Location", "Started"),
+            (
+                ("North", "Left bank, next to the old pumping house", "2019"),
+                ("Centre", "Dam crest", "2020"),
+                ("South", "Right bank, below the spillway and the access road", "2021"),
+            ),
+            style="booktabs",
+            caption="Table 1: Monitoring stations.",
+            widths=(3.0, 7.0, 2.5),
+        ),
+        P(
+            "Readings are taken every morning at the same hour. The level is given in metres "
+            "above the reference datum and the flow in cubic metres per second."
+        ),
+        T(
+            ("Month", "Level", "Inflow", "Outflow"),
+            (
+                ("January", "412.6", "18.4", "15.2"),
+                ("February", "413.1", "21.7", "16.9"),
+                ("March", "414.0", "25.3", "19.8"),
+                ("April", "414.8", "27.1", "22.4"),
+            ),
+            style="aligned",
+            caption="Table 2: Quarterly readings.",
+        ),
+        P(
+            "Table 2 shows a steady rise of the level during the quarter, in line with the "
+            "snowmelt expected for the season. No station reported a fault."
+        ),
+    ]
+    return nodes, build_flow_pdf(nodes)
+
+
 def _survey() -> list[Node]:
     return [
         H(1, "Field survey notes"),
@@ -653,6 +731,10 @@ CASES: dict[str, tuple[Callable[[], tuple[list[Node], bytes]], list[str]]] = {
         ["paragraph_across_pages", "page_numbers", "lang_es"],
     ),
     "synthetic-hyphenation": (case_hyphenation, ["line_break_hyphens", "lang_es"]),
+    "synthetic-tables": (
+        case_tables,
+        ["booktabs_table", "rule_less_table", "wrapped_cells", "table_captions", "lang_en"],
+    ),
     "scan-clean-300dpi": (scan_case("es", Scan(), 1), ["ocr", "scan_clean", "lang_es"]),
     "scan-noise": (scan_case("en", Scan(noise=0.003), 2), ["ocr", "scan_noise", "lang_en"]),
     "scan-skew-1deg": (scan_case("es", Scan(skew=1.0), 3), ["ocr", "scan_skew", "lang_es"]),

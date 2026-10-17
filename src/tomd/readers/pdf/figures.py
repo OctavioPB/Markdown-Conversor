@@ -16,6 +16,18 @@ FIGURE_CAPTION = re.compile(
 # A block at most this × its font size away from a float, beside it, wraps around it.
 _BESIDE_GAP = 2.5
 TABLE_CAPTION = re.compile(r"^(?:tab(?:le|la)|cuadro)\.?\s*\d+", re.IGNORECASE)
+# After the label and number, a caption goes on with punctuation, ends, or starts its
+# title; a sentence that cites a float ("Table 2 shows...") goes on in lower case.
+# Case-sensitive on purpose, unlike the labels.
+_CAPTION_TAIL = re.compile(r"\s*[:.\-–—]|\s*$|\s+[A-ZÁÉÍÓÚÑ(\d]")
+
+
+def is_caption(pattern: re.Pattern[str], text: str) -> bool:
+    """`text` is a caption of the kind `pattern` labels, not a sentence citing one."""
+    text = text.lstrip()
+    label = pattern.match(text)
+    return label is not None and _CAPTION_TAIL.match(text, label.end()) is not None
+
 
 type Float = PdfFigure | PdfTable
 
@@ -41,7 +53,7 @@ def place_floats(
         for c_index, c in enumerate(classified):
             if c_index in used or c.block.page != item.page or c.kind is Kind.CODE:
                 continue
-            if not pattern.match(c.block.text.lstrip()) or not _near(c.block, item):
+            if not is_caption(pattern, c.block.text) or not _near(c.block, item):
                 continue
             distance = min(abs(item.bottom - c.block.top), abs(c.block.bottom - item.top))
             if distance <= max_distance and (best is None or distance < best[0]):
@@ -105,3 +117,14 @@ def _near(block: TextBlock, item: Float) -> bool:
 def _overlaps(block: TextBlock, item: Float) -> bool:
     x0, _, x1, _ = item.bbox
     return min(block.x1, x1) > max(block.x0, x0)
+
+
+def orphan_table_captions(flow: list[Classified | PlacedFloat]) -> list[TextBlock]:
+    """Table captions that no rebuilt table took: the table itself stayed as text."""
+    return [
+        item.block
+        for item in flow
+        if isinstance(item, Classified)
+        and item.kind is not Kind.CODE
+        and is_caption(TABLE_CAPTION, item.block.text)
+    ]

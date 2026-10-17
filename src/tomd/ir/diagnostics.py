@@ -63,6 +63,7 @@ PDF_LOW_CONFIDENCE = "pdf.low_confidence"
 PDF_ROTATED_TEXT_DROPPED = "pdf.rotated_text_dropped"
 PDF_FURNITURE_REMOVED = "pdf.furniture_removed"
 PDF_FOOTNOTE_UNMATCHED = "pdf.footnote_unmatched"
+PDF_TABLE_NOT_RECONSTRUCTED = "pdf.table_not_reconstructed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +294,14 @@ CATALOG: dict[str, CodeInfo] = {
         "Text that looks like a footnote has no matching call on its page; it was kept as "
         "ordinary text.",
         "",
+    ),
+    PDF_TABLE_NOT_RECONSTRUCTED: CodeInfo(
+        "warning",
+        "Something on the page looks like a table (a table caption, or rows aligned in "
+        "columns) but it was not rebuilt with confidence; its content stays as paragraphs "
+        "and the row and column structure is lost.",
+        "Compare that page with the source. If the table matters, convert with "
+        "`--backend docling` or copy it by hand.",
     ),
 }
 

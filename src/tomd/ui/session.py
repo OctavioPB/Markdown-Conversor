@@ -1,13 +1,13 @@
 """Review logic behind the desktop UI, free of widgets so it can be tested.
 
 The UI shows what the pipeline produced; it never emits Markdown itself (the raw view is
-the writer's file, the preview is drawn from the same IR). This module turns a conversion
-result into what the window needs: diagnostic rows, page-to-line anchors that keep the
-original and the Markdown in step, and styled preview runs.
+the writer's file, the preview is drawn from the same IR). A review is built from the
+batch manifest (findings, anchors, the Markdown file), so a document converted days ago
+can be reviewed without converting it again; its IR, for the text preview, is read again
+in the background (conversion is deterministic, so it is the same).
 """
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from tomd.ir import (
@@ -15,7 +15,6 @@ from tomd.ir import (
     BlockQuote,
     Code,
     CodeBlock,
-    Diagnostic,
     Document,
     Emph,
     FootnoteDef,
@@ -34,81 +33,55 @@ from tomd.ir import (
     Text,
     ThematicBreak,
 )
-from tomd.ir.diagnostics import CATALOG
-from tomd.ir.walk import plain_text
+from tomd.pipeline.anchors import Anchor, block_page, first_text
+from tomd.pipeline.manifest import Finding, LibraryEntry, Manifest
+from tomd.ui.texts import failure_text, review_title
 
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
-# Letters and digits only: "_" and "*" are Markdown syntax, escaped or not in the output.
-_WORD = re.compile(r"[^\W_]+")
-_BETWEEN_WORDS = r"[\W_]+"
-# Words of a block used to find it in the Markdown: enough to be unique in practice,
-# few enough to survive escaping and emphasis markers between them.
-_ANCHOR_WORDS = 4
-
-
-@dataclass(frozen=True, slots=True)
-class ConversionRequest:
-    source: str  # file path or Wikipedia reference
-    out_dir: Path
-    revision: int | None = None
-    backend: str = "heuristic"
-    ocr: str = "auto"
-
-    @property
-    def is_pdf(self) -> bool:
-        return self.source.lower().endswith(".pdf") and Path(self.source).is_file()
-
-
-@dataclass(frozen=True, slots=True)
-class DiagnosticRow:
-    severity: str
-    code: str
-    page: int | None
-    message: str
-    action: str
-    bbox: tuple[float, float, float, float] | None
-
-
-@dataclass(frozen=True, slots=True)
-class Anchor:
-    """Where a top-level block with a known page starts in the Markdown."""
-
-    page: int
-    line: int  # 1-based
-    bbox: tuple[float, float, float, float] | None  # PDF points, y up
 
 
 @dataclass
 class Review:
-    """One conversion as the window shows it."""
+    """One library document, as the review screen shows it."""
 
-    request: ConversionRequest
+    entry: LibraryEntry
     markdown_path: Path
     markdown: str
-    document: Document | None
-    diagnostics: tuple[Diagnostic, ...]
-    anchors: list[Anchor] = field(default_factory=list)
+    findings: list[Finding]
+    anchors: list[Anchor]
+    document: Document | None = None  # filled in when the background read finishes
 
     @classmethod
-    def from_result(
-        cls,
-        request: ConversionRequest,
-        markdown_path: Path,
-        diagnostics: tuple[Diagnostic, ...],
-        document: Document | None,
-    ) -> "Review":
-        markdown = markdown_path.read_text(encoding="utf-8")
-        anchors = page_anchors(document, markdown) if document else []
-        return cls(request, markdown_path, markdown, document, diagnostics, anchors)
+    def load(cls, manifest: Manifest, version: str, entry: LibraryEntry, out_dir: Path) -> "Review":
+        path = out_dir / (entry.output or "")
+        markdown = path.read_text(encoding="utf-8") if entry.output and path.is_file() else ""
+        anchors = [
+            Anchor(p, line, bbox) for p, line, bbox in manifest.anchors(entry.sha256, version)
+        ]
+        findings = manifest.findings(entry.sha256, version)
+        return cls(entry, path, markdown, findings, anchors)
 
     @property
     def title(self) -> str:
-        if self.document and self.document.meta.title:
-            return self.document.meta.title
-        return self.markdown_path.stem
+        return self.entry.title or Path(self.entry.source).stem
 
-    def rows(self) -> list[DiagnosticRow]:
-        return diagnostic_rows(self.diagnostics)
+    @property
+    def is_pdf(self) -> bool:
+        return self.entry.source.lower().endswith(".pdf") and Path(self.entry.source).is_file()
+
+    @property
+    def to_review(self) -> list[Finding]:
+        """Warnings and errors, most severe first, then by page: the checklist."""
+        important = [f for f in self.findings if f.severity != "info"]
+        return sorted(important, key=lambda f: (_SEVERITY_ORDER[f.severity], f.page or 0, f.idx))
+
+    @property
+    def automatic(self) -> list[Finding]:
+        """Lossless changes made on purpose (info), listed apart."""
+        return [f for f in self.findings if f.severity == "info"]
+
+    def checked_count(self) -> int:
+        return sum(f.checked for f in self.to_review)
 
     def line_for_page(self, page: int) -> int | None:
         """First Markdown line of `page`, or of the nearest earlier page with content."""
@@ -128,80 +101,32 @@ class Review:
         return found
 
 
-def diagnostic_rows(diagnostics: tuple[Diagnostic, ...]) -> list[DiagnosticRow]:
-    """Most severe first, then by page (document-wide diagnostics first) and code."""
-    rows = [
-        DiagnosticRow(
-            d.severity,
-            d.code,
-            d.provenance.page if d.provenance else None,
-            d.message,
-            CATALOG[d.code].action if d.code in CATALOG else "",
-            d.provenance.bbox if d.provenance else None,
-        )
-        for d in diagnostics
-    ]
-    return sorted(rows, key=lambda r: (_SEVERITY_ORDER[r.severity], r.page or 0, r.code))
-
-
-def page_anchors(document: Document, markdown: str) -> list[Anchor]:
-    """Where each top-level block with a page starts in the Markdown, found by its first
-    words, in order. Best effort: a block whose words are not found (a formula, an image
-    without caption) is skipped."""
-    line_starts = [0] + [m.end() for m in re.finditer("\n", markdown)]
-    anchors: list[Anchor] = []
-    position = 0
-    for block in document.blocks:
-        page = _page(block)
-        words = _WORD.findall(_first_text(block))[:_ANCHOR_WORDS]
-        if page is None or not words:
-            continue
-        pattern = re.compile(_BETWEEN_WORDS.join(re.escape(w) for w in words))
-        match = pattern.search(markdown, position)
-        if match is None:
-            continue
-        position = match.end()
-        provenance = getattr(block, "provenance", None)
-        bbox = provenance.bbox if provenance is not None else None
-        anchors.append(Anchor(page, _line_of(line_starts, match.start()), bbox))
-    return anchors
-
-
-def _page(block: Block) -> int | None:
-    provenance = getattr(block, "provenance", None)
-    return provenance.page if provenance is not None else None
-
-
-def _first_text(block: Block) -> str:
-    match block:
-        case Heading() | Paragraph():
-            return plain_text(block.children)
-        case ListBlock():
-            return next((_first_text(b) for item in block.items for b in item.blocks), "")
-        case BlockQuote() | FootnoteDef():
-            return next((_first_text(b) for b in block.blocks), "")
-        case Table():
-            if block.caption:
-                return plain_text(block.caption)
-            cells = [c for row in block.header_rows + block.body_rows for c in row.cells]
-            return next((_first_text(b) for c in cells for b in c.blocks), "")
-        case Image():
-            return plain_text(block.caption)
-        case CodeBlock():
-            return block.code
+def what_to_review(entry: LibraryEntry) -> str:
+    """The library's "Qué revisar" column, in plain words."""
+    match entry.state:
+        case "to_review":
+            title = review_title(entry.first_code or "", entry.first_page)
+            more = entry.to_check - 1
+            return title + (f" · {more} más" if more > 0 else "")
+        case "failed":
+            return failure_text(entry.error)
+        case "reviewed":
+            return "Revisado" + (f" el {_date(entry.reviewed_at)}" if entry.reviewed_at else "")
+        case "converting":
+            return "En cola…"
         case _:
-            return ""
+            return "—"
 
 
-def _line_of(line_starts: list[int], offset: int) -> int:
-    low, high = 0, len(line_starts) - 1
-    while low < high:
-        mid = (low + high + 1) // 2
-        if line_starts[mid] <= offset:
-            low = mid
-        else:
-            high = mid - 1
-    return low + 1
+def short_date(value: str | None) -> str:
+    return _date(value) if value else ""
+
+
+def _date(value: str) -> str:
+    months = ("ene.", "feb.", "mar.", "abr.", "may.", "jun.", "jul.", "ago.", "sept.", "oct.",
+              "nov.", "dic.")  # fmt: skip
+    year, month, day = value[:10].split("-")
+    return f"{int(day)} {months[int(month) - 1]} {year}"
 
 
 # --- Preview ---------------------------------------------------------------------------------
@@ -228,7 +153,7 @@ def preview_runs(document: Document) -> list[Run]:
 
 
 def _mark(block: Block) -> tuple[str, ...]:
-    page = _page(block)
+    page = block_page(block)
     return (f"page-{page}",) if page is not None else ()
 
 
@@ -312,7 +237,7 @@ def _inlines(nodes: tuple[Inline, ...], out: list[Run], tags: tuple[str, ...]) -
 def _table_text(table: Table) -> str:
     """A table as aligned plain text: cell text only (spans are not drawn)."""
     rows = [
-        [" ".join(_first_text(b) for b in cell.blocks) for cell in row.cells]
+        [" ".join(first_text(b) for b in cell.blocks) for cell in row.cells]
         for row in table.header_rows + table.body_rows
     ]
     if not rows:

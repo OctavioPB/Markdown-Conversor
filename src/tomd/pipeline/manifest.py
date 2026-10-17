@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 FINISHED = ("done", "failed", "drm", "timeout", "memory", "crashed")
 FAILED = ("failed", "drm", "timeout", "memory", "crashed")
 
@@ -52,6 +52,28 @@ CREATE TABLE IF NOT EXISTS diagnostics (
     PRIMARY KEY (sha256, version, code)
 );
 CREATE TABLE IF NOT EXISTS slugs (slug TEXT PRIMARY KEY, sha256 TEXT NOT NULL);
+-- Schema 2: what the desktop UI needs to review a document converted earlier.
+CREATE TABLE IF NOT EXISTS findings (
+    sha256 TEXT NOT NULL,
+    version TEXT NOT NULL,
+    idx INTEGER NOT NULL,          -- order in the document's diagnostics
+    code TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    message TEXT NOT NULL,
+    page INTEGER,
+    bbox TEXT,                     -- JSON [x0, y0, x1, y1] in PDF points, or NULL
+    checked INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (sha256, version, idx)
+);
+CREATE TABLE IF NOT EXISTS anchors (
+    sha256 TEXT NOT NULL,
+    version TEXT NOT NULL,
+    idx INTEGER NOT NULL,
+    page INTEGER NOT NULL,
+    line INTEGER NOT NULL,
+    bbox TEXT,
+    PRIMARY KEY (sha256, version, idx)
+);
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
@@ -68,6 +90,50 @@ class Task:
     source: str  # the path to convert
 
 
+@dataclass(frozen=True, slots=True)
+class Finding:
+    """One diagnostic of a converted document, as the review screen lists it."""
+
+    code: str
+    severity: str
+    message: str
+    page: int | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    checked: bool = False
+    idx: int = 0
+
+
+# How the library shows a document, from its conversion status and its review.
+REVIEW_STATES = ("converting", "to_review", "reviewed", "ready", "failed")
+
+
+@dataclass(frozen=True, slots=True)
+class LibraryEntry:
+    sha256: str
+    source: str
+    title: str | None
+    output: str | None
+    state: str  # one of REVIEW_STATES
+    error: str | None
+    finished_at: str | None
+    reviewed_at: str | None
+    to_check: int  # warnings and errors not checked yet
+    findings: int  # warnings and errors
+    first_code: str | None = None  # the first of those still to check, for the list
+    first_page: int | None = None
+
+
+def _bbox_json(bbox: tuple[float, float, float, float] | None) -> str | None:
+    return json.dumps([round(v, 2) for v in bbox]) if bbox else None
+
+
+def _bbox(value: str | None) -> tuple[float, float, float, float] | None:
+    if not value:
+        return None
+    x0, y0, x1, y1 = json.loads(value)
+    return (float(x0), float(y0), float(x1), float(y1))
+
+
 def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime())
 
@@ -75,13 +141,24 @@ def _now() -> str:
 class Manifest:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path, isolation_level=None)  # autocommit; explicit txns
+        # Autocommit with explicit transactions; the desktop UI reads while a batch
+        # writes, so a busy database is waited for instead of failing.
+        self.db = sqlite3.connect(path, isolation_level=None, timeout=30)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(_SCHEMA)
-        self.db.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', ?)", (SCHEMA_VERSION,)
-        )
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Bring an older manifest to the current schema (tables are created above)."""
+        row = self.db.execute("SELECT value FROM meta WHERE key = 'schema'").fetchone()
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(documents)")}
+        if "reviewed_at" not in columns:  # schema 1 -> 2
+            self.db.execute("ALTER TABLE documents ADD COLUMN reviewed_at TEXT")
+        if row is None:
+            self.db.execute("INSERT INTO meta (key, value) VALUES ('schema', ?)", (SCHEMA_VERSION,))
+        elif row[0] != SCHEMA_VERSION:
+            self.db.execute("UPDATE meta SET value = ? WHERE key = 'schema'", (SCHEMA_VERSION,))
 
     def close(self) -> None:
         self.db.close()
@@ -185,6 +262,8 @@ class Manifest:
         title: str | None = None,
         error: str | None = None,
         diagnostics: dict[tuple[str, str], int] | None = None,
+        findings: list[Finding] | None = None,
+        anchors: list[tuple[int, int, tuple[float, float, float, float] | None]] | None = None,
     ) -> None:
         with self._transaction():
             self.db.execute(
@@ -204,6 +283,24 @@ class Manifest:
                 self.db.execute(
                     "INSERT INTO diagnostics VALUES (?, ?, ?, ?, ?)",
                     (task.sha256, version, code, severity, count),
+                )
+            key = (task.sha256, version)
+            # A new conversion starts a new review: old findings, checks and anchors go.
+            self.db.execute("DELETE FROM findings WHERE sha256 = ? AND version = ?", key)
+            self.db.execute("DELETE FROM anchors WHERE sha256 = ? AND version = ?", key)
+            self.db.execute(
+                "UPDATE documents SET reviewed_at = NULL WHERE sha256 = ? AND version = ?", key
+            )
+            for idx, f in enumerate(findings or []):
+                self.db.execute(
+                    "INSERT INTO findings (sha256, version, idx, code, severity, message, page, "
+                    "bbox) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (*key, idx, f.code, f.severity, f.message, f.page, _bbox_json(f.bbox)),
+                )
+            for idx, (page, line, bbox) in enumerate(anchors or []):
+                self.db.execute(
+                    "INSERT INTO anchors VALUES (?, ?, ?, ?, ?, ?)",
+                    (*key, idx, page, line, _bbox_json(bbox)),
                 )
 
     def reset_running(self, version: str) -> int:
@@ -275,3 +372,76 @@ class Manifest:
             "SELECT COALESCE(SUM(duration_s), 0) FROM documents WHERE version = ?", (version,)
         ).fetchone()
         return float(row[0])
+
+    # --- Library and review (desktop UI) -----------------------------------------------
+
+    def library(self, version: str) -> list[LibraryEntry]:
+        """Every document of this converter version, newest first."""
+        rows = self.db.execute(
+            "SELECT d.sha256, d.source, d.title, d.output, d.status, d.error, d.finished_at, "
+            "d.reviewed_at, "
+            "(SELECT COUNT(*) FROM findings f WHERE f.sha256 = d.sha256 AND f.version = "
+            "d.version AND f.severity != 'info' AND f.checked = 0), "
+            "(SELECT COUNT(*) FROM findings f WHERE f.sha256 = d.sha256 AND f.version = "
+            "d.version AND f.severity != 'info'), "
+            "(SELECT f.code FROM findings f WHERE f.sha256 = d.sha256 AND f.version = "
+            "d.version AND f.severity != 'info' AND f.checked = 0 ORDER BY f.idx LIMIT 1), "
+            "(SELECT f.page FROM findings f WHERE f.sha256 = d.sha256 AND f.version = "
+            "d.version AND f.severity != 'info' AND f.checked = 0 ORDER BY f.idx LIMIT 1) "
+            "FROM documents d WHERE d.version = ? "
+            "ORDER BY COALESCE(d.finished_at, d.started_at, '') DESC, d.source",
+            (version,),
+        )
+        return [
+            LibraryEntry(
+                str(sha), str(source), title, output,
+                review_state(str(status), reviewed_at, int(important)),
+                error, finished_at, reviewed_at, int(unchecked), int(important),
+                first_code, first_page,
+            )
+            for sha, source, title, output, status, error, finished_at, reviewed_at, unchecked,
+            important, first_code, first_page in rows
+        ]  # fmt: skip
+
+    def findings(self, sha256: str, version: str) -> list[Finding]:
+        rows = self.db.execute(
+            "SELECT idx, code, severity, message, page, bbox, checked FROM findings "
+            "WHERE sha256 = ? AND version = ? ORDER BY idx",
+            (sha256, version),
+        )
+        return [
+            Finding(str(c), str(s), str(m), p, _bbox(b), bool(k), int(i))
+            for i, c, s, m, p, b, k in rows
+        ]
+
+    def anchors(
+        self, sha256: str, version: str
+    ) -> list[tuple[int, int, tuple[float, float, float, float] | None]]:
+        rows = self.db.execute(
+            "SELECT page, line, bbox FROM anchors WHERE sha256 = ? AND version = ? ORDER BY idx",
+            (sha256, version),
+        )
+        return [(int(p), int(line), _bbox(b)) for p, line, b in rows]
+
+    def set_checked(self, sha256: str, version: str, idx: int, checked: bool) -> None:
+        self.db.execute(
+            "UPDATE findings SET checked = ? WHERE sha256 = ? AND version = ? AND idx = ?",
+            (int(checked), sha256, version, idx),
+        )
+
+    def set_reviewed(self, sha256: str, version: str, reviewed: bool) -> None:
+        """Mark a document reviewed (allowed with items still unchecked) or not."""
+        self.db.execute(
+            "UPDATE documents SET reviewed_at = ? WHERE sha256 = ? AND version = ?",
+            (_now() if reviewed else None, sha256, version),
+        )
+
+
+def review_state(status: str, reviewed_at: str | None, important: int) -> str:
+    if status in ("pending", "running"):
+        return "converting"
+    if status != "done":
+        return "failed"
+    if reviewed_at:
+        return "reviewed"
+    return "to_review" if important else "ready"

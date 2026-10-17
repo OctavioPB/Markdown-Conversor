@@ -75,7 +75,11 @@ y las tablas no representables generan diagnóstico + HTML embebido.
 - [x] Orden de lectura multicolumna (XY-cut recursivo como base)
 - [x] Eliminación de cabeceras y pies repetidos
 - [ ] Detección y extracción de tablas
-      (hecho: tablas con rejilla de líneas, con spans; falta la estrategia por alineación, §9.2)
+      (hecho: rejilla de líneas con spans; solo filetes horizontales, tipo booktabs; por
+      alineación de columnas, §9.2; lo que parece tabla y no se reconstruye queda como texto
+      con `pdf.table_not_reconstructed`, §9.3. Falta revisar el caso `synthetic-tables`
+      (DRAFT). Límite: celdas combinadas sin líneas y tablas entre páginas, con
+      `--backend docling`)
 - [x] Figuras y pies de figura
 - [ ] **Benchmark de backends:** `heuristic` vs `docling` sobre el mismo corpus,
       midiendo calidad, tiempo por página y memoria pico → ADR que decide el default

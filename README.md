@@ -21,20 +21,24 @@ bytes, y toda pérdida de información queda registrada como un diagnóstico.
 
 Para usarla:
 
-- **Arrastrar y soltar:** suelta sobre la ventana un PDF o un EPUB y se convierte al
-  momento. Si sueltas una carpeta, o varios archivos a la vez, se convierten todos juntos
-  (como «Convertir carpeta…»).
-- **Un documento:** «Abrir archivo…», elige un PDF o un EPUB y pulsa **Convertir**. A la
-  izquierda ves el original y a la derecha el texto convertido. Abajo, los avisos: al
-  hacer clic en uno se muestra la página afectada y qué hacer.
-- **Una carpeta entera:** «Convertir carpeta…». La barra de abajo muestra el avance. Si la
-  cancelas o apagas el equipo, al convertir de nuevo la misma carpeta sigue donde se quedó.
-- **Los resultados** quedan en `Documentos	omd` (hay un acceso en el menú Inicio:
+- **Añadir documentos:** suelta sobre la ventana archivos PDF o EPUB, o una carpeta entera;
+  o usa **Añadir documentos ▾** (archivos, una carpeta o un artículo de Wikipedia). Si
+  cierras la aplicación a medias, al añadir lo mismo de nuevo sigue donde se quedó.
+- **La biblioteca** muestra cada documento con su estado: **Listo**, **Por revisar** (tomd
+  encontró algo dudoso y dice qué), **Revisado** o **No convertido** (con el motivo). Se
+  puede buscar y filtrar por estado.
+- **Revisar:** abre un documento «Por revisar» (o pulsa **Revisar pendientes**). A la
+  izquierda ves el original y a la derecha el resultado, como texto o como Markdown.
+  Abajo, la lista «Qué revisar»: al hacer clic en un punto se muestra su sitio en los dos
+  lados; marca cada casilla cuando lo hayas comprobado y, al acabar, **Marcar como
+  revisado** te lleva al siguiente. Se puede marcar aunque queden casillas sin marcar.
+- **Opciones:** cuándo leer páginas escaneadas (OCR) y la carpeta de resultados.
+- **Los resultados** quedan en `Documentos\tomd` (hay un acceso en el menú Inicio:
   «Carpeta de resultados»). Cada documento es un archivo `.md`, más una carpeta con sus
   imágenes si las tiene.
 
 Se desinstala desde **Configuración → Aplicaciones**. Los documentos convertidos en
-`Documentos	omd` no se borran al desinstalar.
+`Documentos\tomd` no se borran al desinstalar.
 
 ## Instalación para desarrollo
 
@@ -127,27 +131,29 @@ uv run tomd batch biblioteca/ otra-carpeta/ lista.txt -o out/ --workers 1 --time
 ### Interfaz de escritorio
 
 ```bash
-uv run tomd ui                    # ventana para convertir y revisar
-uv run tomd ui articulo.pdf       # con el origen ya rellenado
+uv run tomd ui                    # biblioteca y revisión
+uv run tomd ui articulo.pdf       # convierte ese documento y abre su revisión
 ```
 
-Una ventana local (Tkinter, sin navegador ni servidor) para convertir y revisar:
+Una ventana local (Tkinter con un tema `ttk` propio, sin navegador ni servidor) con dos
+pantallas:
 
-- **Barra superior:** origen (archivo o artículo de Wikipedia), revisión, backend, modo
-  OCR y carpeta de salida. Ctrl+O abre un archivo y Ctrl+Enter convierte.
-- **Original:** la página del PDF, con zoom (Ctrl+rueda) y paso de página (Re Pág/Av Pág).
-  Se resalta el bloque o el diagnóstico seleccionado.
-- **Markdown:** el archivo generado, de solo lectura y con búsqueda (Ctrl+F), y una vista
-  previa formateada. Al hacer clic en una línea se muestra su bloque en el original; al
-  pasar de página, el Markdown la sigue (casilla «Sincronizar»).
-- **Diagnósticos:** al seleccionar uno se va a su página y se muestra qué hacer.
-- **Arrastrar y soltar** (con `tkinterdnd2`): un archivo se convierte y se muestra; una
-  carpeta o varios elementos se convierten como lote. Sin `tkinterdnd2` la ventana
-  funciona igual, sin esta opción.
+- **Biblioteca:** todos los documentos de la carpeta de resultados con su estado
+  (Convirtiendo, Por revisar, Revisado, Listo, No convertido), qué revisar y la fecha;
+  búsqueda y filtros. La primera vez muestra una zona para soltar archivos.
+- **Revisión:** el original (página del PDF con zoom, Ctrl+rueda, y Re Pág/Av Pág; para EPUB
+  y Wikipedia, sus datos) junto al resultado (texto formateado o Markdown). Debajo, los
+  avisos y errores como lista de comprobación: cada punto lleva a su página y resalta el
+  bloque; al hacer clic en una línea del Markdown se muestra su bloque en el original.
+  «Volver a convertir con OCR» repite la conversión leyendo las páginas como imagen.
 
-Cada conversión se ejecuta en un proceso aparte: la ventana no se bloquea, se puede
-cancelar y un fallo nativo no la cierra. «Revisar .md existente…» abre una salida anterior
-(sin diagnósticos ni vista previa, que no se guardan en el archivo).
+Toda conversión pasa por el lote (`tomd batch`) en un proceso aparte: la biblioteca es el
+manifiesto (`manifest.sqlite`), que guarda también los avisos, la posición de cada página
+en el Markdown, las casillas marcadas y la marca de revisado. Así se puede revisar un
+documento convertido hace días sin convertirlo otra vez. Los artículos de Wikipedia se
+descargan primero a `.wikipedia/` dentro de la carpeta de resultados. Arrastrar y soltar
+necesita `tkinterdnd2`; sin él, la ventana funciona igual sin esa opción. Las opciones se
+guardan en `%APPDATA%\tomd\settings.json` (`~/.config/tomd/` fuera de Windows).
 
 `tomd convert` imprime la ruta del Markdown y, por la salida de error, un resumen de
 diagnósticos con la acción recomendada cuando hay algo que hacer:

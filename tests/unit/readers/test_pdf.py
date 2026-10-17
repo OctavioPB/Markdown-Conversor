@@ -633,6 +633,82 @@ def test_aligned_table_without_rules_needs_a_table_cue(tmp_path: Path) -> None:
     doc = convert(make_pdf(tmp_path, draw))
     (table,) = [b for b in doc.blocks if isinstance(b, Table)]
     assert len(table.body_rows) + len(table.header_rows) == 4
+    assert not _lost_tables(doc)
+
+
+def _lost_tables(doc: Document) -> list[str]:
+    return [d.message for d in doc.diagnostics if d.code == codes.PDF_TABLE_NOT_RECONSTRUCTED]
+
+
+def test_aligned_rows_without_a_table_cue_stay_text_and_are_reported(tmp_path: Path) -> None:
+    from tomd.ir import Table
+
+    def draw(c: Canvas) -> None:
+        _filler(c, TOP)
+        c.setFont("Helvetica", 10)
+        pairs = [("apple", "orchard"), ("pear", "garden"), ("plum", "hedge"), ("fig", "wall")]
+        for i, (left, right) in enumerate(pairs):
+            c.drawString(LEFT, 600 - 14 * i, left)
+            c.drawString(LEFT + 120, 600 - 14 * i, right)
+        _filler(c, 500)
+
+    doc = convert(make_pdf(tmp_path, draw))
+    # Two columns of words, no numbers, no bold header: not rebuilt (§9: better lose the
+    # structure than invent it), but reported, with the place on the page.
+    assert not [b for b in doc.blocks if isinstance(b, Table)]
+    assert "orchard" in str(doc.blocks)
+    (message,) = _lost_tables(doc)
+    assert "4 rows aligned" in message
+    (diagnostic,) = [d for d in doc.diagnostics if d.code == codes.PDF_TABLE_NOT_RECONSTRUCTED]
+    assert diagnostic.provenance is not None and diagnostic.provenance.bbox is not None
+
+
+def test_short_aligned_pairs_are_not_reported(tmp_path: Path) -> None:
+    def draw(c: Canvas) -> None:
+        _filler(c, TOP)
+        c.setFont("Helvetica", 10)
+        for i, (left, right) in enumerate([("Madrid", "Monday"), ("Spring", "Morning"),
+                                           ("North", "Early")]):  # fmt: skip
+            c.drawString(LEFT, 600 - 14 * i, left)
+            c.drawString(LEFT + 120, 600 - 14 * i, right)
+        _filler(c, 520)
+
+    assert not _lost_tables(convert(make_pdf(tmp_path, draw)))
+
+
+def test_table_caption_without_a_table_is_reported(tmp_path: Path) -> None:
+    def draw(c: Canvas) -> None:
+        _filler(c, TOP)
+        _body(c, LEFT, 620, "Table 3: Answers of the survey.")
+        # Cells of very different widths: no shared column gaps, nothing is rebuilt.
+        _body(c, LEFT, 600, "Most people asked for longer opening hours in the evening")
+        _body(c, LEFT + 40, 586, "and a quieter room")
+        _filler(c, 540)
+
+    (message,) = _lost_tables(convert(make_pdf(tmp_path, draw)))
+    assert "Table 3" in message
+
+
+def test_a_sentence_citing_a_table_is_not_its_caption(tmp_path: Path) -> None:
+    from tomd.ir import Table
+
+    def draw(c: Canvas) -> None:
+        _filler(c, TOP)
+        _body(c, LEFT, 620, "Table 1: Readings.")
+        c.setFont("Helvetica", 10)
+        rows = [("Spain", "47.4"), ("France", "68.2"), ("Italy", "58.9"), ("Portugal", "10.3")]
+        for i, (name, value) in enumerate(rows):
+            c.drawString(LEFT, 600 - 14 * i, name)
+            c.drawString(LEFT + 120, 600 - 14 * i, value)
+        # Closer to the table than the caption, but a sentence: it must stay a paragraph.
+        _body(c, LEFT, 536, "Table 1 shows the readings of the last quarter.")
+        _filler(c, 500)
+
+    doc = convert(make_pdf(tmp_path, draw))
+    (table,) = [b for b in doc.blocks if isinstance(b, Table)]
+    assert "Readings" in str(table.caption)
+    assert "Table 1 shows" in str([b for b in doc.blocks if isinstance(b, Paragraph)])
+    assert not _lost_tables(doc)
 
 
 def test_spaced_author_names_stay_one_line(tmp_path: Path) -> None:
