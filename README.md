@@ -32,10 +32,17 @@ Para usarla:
   Abajo, la lista «Qué revisar»: al hacer clic en un punto se muestra su sitio en los dos
   lados; marca cada casilla cuando lo hayas comprobado y, al acabar, **Marcar como
   revisado** te lleva al siguiente. Se puede marcar aunque queden casillas sin marcar.
-- **Quitar documentos:** «Quitar de la biblioteca…» (o la tecla Supr) quita el documento
-  seleccionado; «Vaciar la biblioteca…», en Opciones, los quita todos. Antes se pregunta,
-  con una casilla para borrar también los archivos `.md` y sus imágenes (desmarcada: si no
-  la marcas, los archivos se quedan en la carpeta). El documento original nunca se toca.
+- **Quitar documentos:** selecciona uno o varios (Ctrl o Mayús + clic, Ctrl+A para todos
+  los que se ven) y usa «Quitar de la biblioteca…» o la tecla Supr; «Vaciar la
+  biblioteca…», en Opciones, los quita todos. Antes se pregunta, con una casilla para
+  borrar también sus archivos `.md`, imágenes y carpetas de libros (desmarcada: si no la
+  marcas, los archivos se quedan). «Reintentar» vuelve a convertir todos los «No
+  convertidos» seleccionados. El documento original nunca se toca.
+- **Empezar de cero:** en Opciones, «Empezar de cero…» hace que tomd olvide todo lo que
+  convirtió en esa carpeta (biblioteca, revisiones, nombres reservados e historial): lo que
+  añadas después se convierte de nuevo, con la versión actual. Con la casilla marcada borra
+  también todo lo que tomd escribió allí, reconocido por su front matter; tus propios
+  archivos no se tocan.
 - **Libros por capítulos:** un libro largo con capítulos claros sale como una carpeta con
   un archivo por capítulo. En la biblioteca es una sola fila («PDF · 12 partes»); en la
   revisión eliges el capítulo arriba a la derecha, y al pasar de página en el original o

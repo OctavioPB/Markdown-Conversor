@@ -20,7 +20,7 @@ from typing import Any
 
 from tomd import __version__
 from tomd.pipeline.batch import MANIFEST_NAME
-from tomd.pipeline.dispatch import remove_output
+from tomd.pipeline.dispatch import remove_output, reset_output
 from tomd.pipeline.manifest import Finding, LibraryEntry, Manifest
 from tomd.readers.pdf.reader import DEFAULT_BACKEND
 from tomd.ui import theme
@@ -332,33 +332,86 @@ class TomdApp:
                                  split=self.split)  # fmt: skip
         self.start_batch(sources, options, open_after=single)
 
-    def retry(self, entry: LibraryEntry) -> None:
+    def retry(self, entries: list[LibraryEntry]) -> None:
+        """Convert again the documents that failed (one batch for all of them)."""
+        if not entries:
+            return
         options = BatchOptionsUI(str(self.out_dir), ocr=self.ocr, backend=self.backend,
                                  retry_failed=True, split=self.split)  # fmt: skip
-        self.start_batch([entry.source], options, open_after=False)
+        self.start_batch([e.source for e in entries], options, open_after=False)
 
     # --- Removing documents ----------------------------------------------------------
 
-    def forget(self, entry: LibraryEntry) -> None:
-        """Remove one document from the library, and its files if the person asks."""
-        if entry.state == "converting" or self.batch is not None:
+    def forget(self, entries: list[LibraryEntry]) -> None:
+        """Remove documents from the library, and their files if the person asks."""
+        if not entries:
+            return
+        if self.batch is not None or any(e.state == "converting" for e in entries):
             messagebox.showinfo(
                 "tomd", "Espera a que termine la conversión en curso para quitar documentos "
                 "de la biblioteca.",
             )  # fmt: skip
             return
-        title = entry.title or Path(entry.source).stem
-        files = (f"Borrar también su carpeta, con sus {entry.parts - 1} archivos e imágenes"
-                 if entry.parts else "Borrar también su archivo .md y sus imágenes")  # fmt: skip
+        if len(entries) == 1:
+            entry = entries[0]
+            title = entry.title or Path(entry.source).stem
+            text = (f"«{title}» dejará de aparecer en la biblioteca, con su estado y lo que "
+                    "hayas marcado al revisarlo.")  # fmt: skip
+            files = (
+                f"Borrar también su carpeta, con sus {entry.parts - 1} archivos e imágenes"
+                if entry.parts
+                else "Borrar también su archivo .md y sus imágenes"
+            )
+        else:
+            text = (f"Los {len(entries)} documentos seleccionados dejarán de aparecer en la "
+                    "biblioteca, con su estado y lo que hayas marcado al revisarlos.")  # fmt: skip
+            books = sum(1 for e in entries if e.parts)
+            files = "Borrar también sus archivos .md e imágenes" + (
+                " (y las carpetas de los libros)" if books else ""
+            )
         answer = ask_forget(
             self.root, "Quitar de la biblioteca",
-            f"«{title}» dejará de aparecer en la biblioteca, con su estado y lo que hayas "
-            "marcado al revisarlo. El documento original no se toca; si lo añades de "
-            "nuevo, se convierte otra vez.",
+            text + " Los documentos originales no se tocan; si los añades de nuevo, se "
+            "convierten otra vez.",
             files_label=files,
         )  # fmt: skip
         if answer is not None:
-            self._forget([entry], delete_files=answer)
+            self._forget(entries, delete_files=answer)
+
+    def reset(self) -> None:
+        """Start the results folder from scratch: tomd forgets everything it converted
+        there, so whatever is added again is converted again."""
+        if self.batch is not None:
+            messagebox.showinfo(
+                "tomd", "Espera a que termine la conversión en curso para empezar de cero."
+            )
+            return
+        answer = ask_forget(
+            self.root, "Empezar de cero",
+            "tomd olvidará todo lo que ha convertido en esta carpeta: la biblioteca, lo que "
+            "hayas marcado al revisar, los nombres de archivo que tenía reservados y el "
+            "historial. Lo que añadas después se convertirá de nuevo, con la versión actual. "
+            "Los documentos originales no se tocan.\n\nSi conservas los archivos, un documento "
+            "nuevo con el mismo título puede sobrescribir uno de ellos.",
+            files_label=f"Borrar también todo lo que tomd escribió en {self.out_dir}",
+        )  # fmt: skip
+        if answer is None:
+            return
+        self.show_library("all")
+        self.review_view.close()
+        self.manifest.close()
+        failed = reset_output(self.out_dir, delete_files=answer)
+        self.manifest = Manifest(self.out_dir / MANIFEST_NAME)
+        self.show_library("all")
+        self.status.set(
+            "Empezaste de cero" + (": se borraron los archivos convertidos." if answer else
+                                   "; los archivos convertidos siguen en la carpeta.")
+        )  # fmt: skip
+        if failed:
+            messagebox.showwarning(
+                "tomd", f"No se pudieron borrar los archivos de {failed} documento(s): puede "
+                "que estén abiertos en otro programa.",
+            )  # fmt: skip
 
     def clear_library(self) -> None:
         """Empty the library of the current results folder."""
@@ -539,6 +592,9 @@ class TomdApp:
         if dialog.clear_requested:
             self.clear_library()
             return
+        if dialog.reset_requested:
+            self.reset()
+            return
         if dialog.result is None:
             return
         ocr, backend, out_dir, split = dialog.result
@@ -615,6 +671,7 @@ class OptionsDialog(tk.Toplevel):
         self.resizable(False, False)
         self.result: tuple[str, str, Path, str] | None = None
         self.clear_requested = False
+        self.reset_requested = False
         self.ocr = tk.StringVar(value=ocr)
         self.backend = tk.StringVar(value=backend)
         self.out_dir = tk.StringVar(value=str(out_dir))
@@ -664,6 +721,13 @@ class OptionsDialog(tk.Toplevel):
         ttk.Button(row, text="Vaciar la biblioteca…", command=self._clear).pack(
             side="right", padx=(12, 0)
         )
+        row = ttk.Frame(body, style="Surface.TFrame")
+        row.pack(fill="x", pady=(6, 0))
+        ttk.Label(row, text="Olvida todo lo convertido aquí, para convertirlo de nuevo.",
+                  style="Surface.Muted.TLabel").pack(side="left")  # fmt: skip
+        ttk.Button(row, text="Empezar de cero…", command=self._reset).pack(
+            side="right", padx=(12, 0)
+        )
 
         backends = available_backends()
         if len(backends) > 1:
@@ -693,6 +757,10 @@ class OptionsDialog(tk.Toplevel):
         self.result = (
             self.ocr.get(), self.backend.get(), Path(self.out_dir.get()), self.split.get()
         )  # fmt: skip
+        self.destroy()
+
+    def _reset(self) -> None:
+        self.reset_requested = True  # the app asks for confirmation once this closes
         self.destroy()
 
     def _clear(self) -> None:

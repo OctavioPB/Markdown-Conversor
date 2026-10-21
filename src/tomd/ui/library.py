@@ -30,8 +30,8 @@ class LibraryActions:
     open_entry: Callable[[LibraryEntry], None]
     review_pending: Callable[[], None]
     show_in_folder: Callable[[LibraryEntry], None]
-    retry: Callable[[LibraryEntry], None]
-    forget: Callable[[LibraryEntry], None]
+    retry: Callable[[list[LibraryEntry]], None]
+    forget: Callable[[list[LibraryEntry]], None]
     stop: Callable[[], None]
 
 
@@ -127,7 +127,7 @@ class LibraryView(ttk.Frame):
         card.rowconfigure(0, weight=1)
         columns = ("kind", "state", "review", "date")
         self.tree = ttk.Treeview(
-            card, columns=columns, style="Library.Treeview", selectmode="browse"
+            card, columns=columns, style="Library.Treeview", selectmode="extended"
         )
         char = font.Font(font=self.fonts(10)).measure("0")
         self.tree.heading("#0", text="Documento", anchor="w")
@@ -154,7 +154,9 @@ class LibraryView(ttk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         self.tree.bind("<Double-1>", lambda _e: self._open_selected())
         self.tree.bind("<Return>", lambda _e: self._open_selected())
-        self.tree.bind("<Delete>", lambda _e: self._with_selected(self.actions.forget))
+        self.tree.bind("<Delete>", lambda _e: self._forget_selected())
+        self.tree.bind("<Control-a>", self._select_all)
+        self.tree.bind("<Control-A>", self._select_all)
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self._selection_changed())
         self.tree.bind("<Button-3>", self._context_menu)
 
@@ -169,18 +171,15 @@ class LibraryView(ttk.Frame):
             command=lambda: self._with_selected(self.actions.show_in_folder),
         )  # fmt: skip
         self.folder_button.grid(row=0, column=1, padx=(0, 8))
-        self.retry_button = ttk.Button(
-            actions, text="Reintentar", command=lambda: self._with_selected(self.actions.retry)
-        )
+        self.retry_button = ttk.Button(actions, text="Reintentar", command=self._retry_selected)
         self.retry_button.grid(row=0, column=2, padx=(0, 8))
         self.forget_button = ttk.Button(
-            actions, text="Quitar de la biblioteca…",
-            command=lambda: self._with_selected(self.actions.forget),
-        )  # fmt: skip
+            actions, text="Quitar de la biblioteca…", command=self._forget_selected
+        )
         self.forget_button.grid(row=0, column=3)
         ttk.Label(
-            actions, text="Suelta archivos o carpetas en cualquier parte de la ventana "
-            "para añadirlos.", style="Muted.TLabel",
+            actions, text="Ctrl o Mayús + clic para elegir varios. Suelta archivos o carpetas "
+            "en la ventana para añadirlos.", style="Muted.TLabel",
         ).grid(row=0, column=4, sticky="e")  # fmt: skip
         self.context = tk.Menu(self, tearoff=False, font=self.fonts(10))
 
@@ -296,7 +295,7 @@ class LibraryView(ttk.Frame):
     def _fill(self) -> None:
         for key, button in self.filter_buttons.items():
             button.configure(style="FilterOn.TButton" if key == self.filter else "Filter.TButton")
-        selected = self.selected()
+        selected = {e.sha256 for e in self.selected_entries()}
         self.tree.delete(*self.tree.get_children())
         self._rows.clear()
         for entry in self._visible():
@@ -309,8 +308,8 @@ class LibraryView(ttk.Frame):
                 tags=(entry.state,),
             )  # fmt: skip
             self._rows[item] = entry
-            if selected is not None and entry.sha256 == selected.sha256:
-                self.tree.selection_set(item)
+            if entry.sha256 in selected:
+                self.tree.selection_add(item)
         self._selection_changed()
 
     def show_progress(self, label: str, done: int | None, total: int | None) -> None:
@@ -332,9 +331,14 @@ class LibraryView(ttk.Frame):
 
     # --- Selection -------------------------------------------------------------------
 
+    def selected_entries(self) -> list[LibraryEntry]:
+        """The selected documents, in list order."""
+        return [self._rows[item] for item in self.tree.selection() if item in self._rows]
+
     def selected(self) -> LibraryEntry | None:
-        selection = self.tree.selection()
-        return self._rows.get(selection[0]) if selection else None
+        """The selected document when exactly one is (open, show in the folder)."""
+        entries = self.selected_entries()
+        return entries[0] if len(entries) == 1 else None
 
     def select(self, sha256: str) -> None:
         for item, entry in self._rows.items():
@@ -342,16 +346,28 @@ class LibraryView(ttk.Frame):
                 self.tree.selection_set(item)
                 self.tree.see(item)
 
+    def _select_all(self, _event: object = None) -> str:
+        self.tree.selection_set(self.tree.get_children())
+        return "break"  # not the Treeview's own Ctrl+A
+
     def _selection_changed(self) -> None:
+        entries = self.selected_entries()
         entry = self.selected()
         state = entry.state if entry else None
         self.open_button.configure(text="Revisar" if state == "to_review" else "Abrir")
+        count = len(entries)
+        self.forget_button.configure(
+            text=f"Quitar de la biblioteca ({count})…" if count > 1 else "Quitar de la biblioteca…"
+        )
+        failed = [e for e in entries if e.state == "failed"]
+        self.retry_button.configure(text=f"Reintentar ({len(failed)})" if len(failed) > 1
+                                    else "Reintentar")  # fmt: skip
         enabled = {
             self.open_button: state not in (None, "failed", "converting"),
             self.folder_button: bool(entry and entry.output),
-            self.retry_button: state == "failed",
-            # Not while it converts: the batch is writing its record.
-            self.forget_button: state not in (None, "converting"),
+            self.retry_button: bool(failed),
+            # Not while one converts: the batch is writing its record.
+            self.forget_button: bool(entries) and all(e.state != "converting" for e in entries),
         }
         for button, on in enabled.items():
             button.state(["!disabled"] if on else ["disabled"])
@@ -366,27 +382,47 @@ class LibraryView(ttk.Frame):
         if entry is not None:
             action(entry)
 
+    def _forget_selected(self) -> None:
+        entries = self.selected_entries()
+        if entries:
+            self.actions.forget(entries)
+
+    def _retry_selected(self) -> None:
+        failed = [e for e in self.selected_entries() if e.state == "failed"]
+        if failed:
+            self.actions.retry(failed)
+
     def _context_menu(self, event: "tk.Event[ttk.Treeview]") -> None:
         item = self.tree.identify_row(event.y)
         if not item:
             return
-        self.tree.selection_set(item)
-        entry = self._rows[item]
+        if item not in self.tree.selection():  # a right click outside the selection
+            self.tree.selection_set(item)
+        self.update_idletasks()
+        entries = self.selected_entries()
         self.context.delete(0, "end")
-        if entry.state not in ("failed", "converting"):
-            self.context.add_command(label="Revisar" if entry.state == "to_review" else "Abrir",
-                                     command=lambda: self.actions.open_entry(entry))  # fmt: skip
-        if entry.output:
-            self.context.add_command(
-                label="Mostrar en la carpeta", command=lambda: self.actions.show_in_folder(entry)
-            )
-        if entry.state == "failed":
-            self.context.add_command(label="Reintentar", command=lambda: self.actions.retry(entry))
-        if entry.state != "converting":
-            self.context.add_separator()
-            self.context.add_command(
-                label="Quitar de la biblioteca…", command=lambda: self.actions.forget(entry)
-            )
+        if len(entries) == 1:
+            entry = entries[0]
+            if entry.state not in ("failed", "converting"):
+                self.context.add_command(
+                    label="Revisar" if entry.state == "to_review" else "Abrir",
+                    command=lambda: self.actions.open_entry(entry),
+                )
+            if entry.output:
+                self.context.add_command(
+                    label="Mostrar en la carpeta",
+                    command=lambda: self.actions.show_in_folder(entry),
+                )
+        failed = [e for e in entries if e.state == "failed"]
+        if failed:
+            label = f"Reintentar ({len(failed)})" if len(failed) > 1 else "Reintentar"
+            self.context.add_command(label=label, command=lambda: self.actions.retry(failed))
+        if entries and all(e.state != "converting" for e in entries):
+            if self.context.index("end") is not None:
+                self.context.add_separator()
+            label = (f"Quitar {len(entries)} de la biblioteca…" if len(entries) > 1
+                     else "Quitar de la biblioteca…")  # fmt: skip
+            self.context.add_command(label=label, command=lambda: self.actions.forget(entries))
         self.context.tk_popup(event.x_root, event.y_root)
 
 

@@ -482,6 +482,11 @@ class Manifest:
             for table in ("documents", "diagnostics", "findings", "anchors", "parts", "inputs"):
                 self.db.executemany(f"DELETE FROM {table} WHERE sha256 = ?", keys)
 
+    def outputs(self) -> list[tuple[str | None, str]]:
+        """(output, source) of every document, under every converter version."""
+        rows = self.db.execute("SELECT output, source FROM documents ORDER BY source")
+        return [(output, str(source)) for output, source in rows]
+
     def forget_all(self) -> None:
         """Empty the library (and the run history); file names stay claimed, as in forget."""
         with self._transaction():

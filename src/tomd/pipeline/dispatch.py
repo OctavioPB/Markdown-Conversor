@@ -21,6 +21,9 @@ from tomd.writers.markdown import RenderResult, asset_filename, render_markdown
 # Bytes that identify a Parsoid HTML document (a recorded Wikipedia article).
 _PARSOID_MARKERS = (b"parsoid-body", b'property="mw:htmlVersion"')
 _SLUG_MAX = 80
+# tomd's front matter keys come within its first lines (title, book, chapter... then
+# source_sha256 and converter_version, ADR-010).
+_FRONT_MATTER_LINES = 12
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +132,85 @@ def remove_output(out_dir: Path, output: str | None, source: str) -> list[Path]:
             resolved.unlink()
         removed.append(resolved)
     return removed
+
+
+def reset_output(out_dir: Path, *, delete_files: bool) -> int:
+    """Start the output folder from scratch: forget everything tomd remembers about it
+    (the manifest: documents, reviews, claimed file names, run history, cached hashes)
+    and, with `delete_files`, delete what it wrote there (each document's files, the
+    downloaded articles, the batch report). Returns how many documents' files could not
+    be deleted (open in another program)."""
+    from tomd.pipeline.batch import MANIFEST_NAME, REPORT_NAME
+    from tomd.pipeline.manifest import Manifest
+
+    manifest_path = out_dir / MANIFEST_NAME
+    failed = 0
+    if delete_files and manifest_path.is_file():
+        manifest = Manifest(manifest_path)
+        try:
+            outputs = manifest.outputs()
+        finally:
+            manifest.close()
+        for output, source in outputs:
+            try:
+                remove_output(out_dir, output, source)
+            except OSError:
+                failed += 1
+    if delete_files:
+        # Also what tomd wrote before an earlier fresh start, which no manifest lists any
+        # more: recognised by tomd's own front matter, never by name.
+        for output in _written_by_tomd(out_dir):
+            try:
+                remove_output(out_dir, output, "")
+            except OSError:
+                failed += 1
+        _clear_article_cache(out_dir)
+        (out_dir / REPORT_NAME).unlink(missing_ok=True)
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        (out_dir / f"{MANIFEST_NAME}{suffix}").unlink(missing_ok=True)
+    return failed
+
+
+def _written_by_tomd(out_dir: Path) -> list[str]:
+    """Outputs in `out_dir` that tomd wrote (as manifest-style output names): `.md` files,
+    and books' `<folder>/index.md`, whose front matter carries tomd's own keys."""
+    from tomd.pipeline.book import INDEX_NAME
+
+    if not out_dir.is_dir():
+        return []
+    found: list[str] = []
+    for path in sorted(out_dir.iterdir()):
+        if path.is_file() and path.suffix == ".md" and _has_tomd_front_matter(path):
+            found.append(path.name)
+        elif path.is_dir() and _has_tomd_front_matter(path / INDEX_NAME):
+            found.append(f"{path.name}/{INDEX_NAME}")
+    return found
+
+
+def _has_tomd_front_matter(path: Path) -> bool:
+    """The file opens with the front matter tomd writes (ADR-010): `---`, then within its
+    first lines both `source_sha256:` and `converter_version:`."""
+    try:
+        with path.open(encoding="utf-8") as fh:
+            head = [fh.readline() for _ in range(_FRONT_MATTER_LINES)]
+    except (OSError, UnicodeDecodeError):
+        return False
+    if not head or head[0].strip() != "---":
+        return False
+    keys = {line.split(":", 1)[0] for line in head[1:] if ":" in line}
+    return {"source_sha256", "converter_version"} <= keys
+
+
+def _clear_article_cache(out_dir: Path) -> None:
+    """The Wikipedia articles tomd downloaded into the output folder."""
+    from tomd.pipeline.fetch import CACHE_DIR
+
+    cache = out_dir / CACHE_DIR
+    if cache.is_dir():
+        for path in cache.glob("*.html"):
+            path.unlink(missing_ok=True)
+        if not any(cache.iterdir()):
+            cache.rmdir()
 
 
 def convert(

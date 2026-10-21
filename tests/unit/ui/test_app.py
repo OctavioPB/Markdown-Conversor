@@ -251,16 +251,16 @@ def test_forget_one_document_keeps_or_deletes_its_files(
     answers: list[bool | None] = [None, False, True]
     monkeypatch.setattr(app_module, "ask_forget", lambda *_a, **_k: answers.pop(0))
 
-    app.forget(first)  # cancelled: nothing changes
+    app.forget([first])  # cancelled: nothing changes
     assert len(app.entries) == 2
 
     app.open_entry(second)
-    app.forget(second)  # the list only: the file stays, the open review closes
+    app.forget([second])  # the list only: the file stays, the open review closes
     assert app.review is None and [e.sha256 for e in app.entries] == [first.sha256]
     assert (out / str(second.output)).is_file()
     assert "siguen en la carpeta" in app.status.get()
 
-    app.forget(first)  # with its files
+    app.forget([first])  # with its files
     assert not app.entries and not (out / str(first.output)).exists()
     assert app.library.empty.winfo_manager() == "grid"  # back to the first-use screen
     app.close()
@@ -352,7 +352,7 @@ def test_removing_a_book_deletes_its_folder(
         return True
 
     monkeypatch.setattr(app_module, "ask_forget", answer)
-    app.forget(app.entries[0])
+    app.forget([app.entries[0]])
     assert "carpeta" in labels[0] and "3 archivos" in labels[0]
     assert not (out / "networks").exists() and not app.entries
     app.close()
@@ -371,3 +371,81 @@ def test_the_split_option_is_remembered_and_used(tmp_path: Path, tk_root: Any) -
     settings.write_text(json.dumps({"split": "nonsense"}))
     assert TomdApp(tk_root, tmp_path / "out2", settings).split == "auto"
     app.close()  # destroys the shared root: last
+
+
+def test_several_documents_are_selected_and_removed_together(
+    tmp_path: Path, tk_root: Any, quiet: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tomd.ui import app as app_module
+
+    out = tmp_path / "out"
+    run_batch([TWO_PAGES, FIXED, LISTS], BatchOptions(out_dir=out, ocr="never"))
+    app = _app(tk_root, out)
+    library = app.library
+    rows = library.tree.get_children()
+    library.tree.selection_set(rows[:2])
+    tk_root.update()
+    assert len(library.selected_entries()) == 2 and library.selected() is None
+    assert "(2)" in str(library.forget_button.cget("text"))
+    assert "disabled" in library.open_button.state()  # opening is for one document
+    texts: list[str] = []
+
+    def answer(_root: object, _title: str, text: str, **_k: object) -> bool:
+        texts.append(text)
+        return False  # the list only
+
+    monkeypatch.setattr(app_module, "ask_forget", answer)
+    library._forget_selected()
+    assert "Los 2 documentos seleccionados" in texts[0]
+    assert len(app.entries) == 1
+    library._select_all()
+    assert len(library.selected_entries()) == 1
+    app.close()
+
+
+def test_retry_runs_every_selected_failure(
+    tmp_path: Path, tk_root: Any, quiet: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "in"
+    folder.mkdir()
+    for name in ("a.pdf", "b.pdf"):
+        (folder / name).write_bytes(b"%PDF-1.4 truncated " + name.encode())
+    out = tmp_path / "out"
+    run_batch([folder], BatchOptions(out_dir=out, ocr="never"))
+    app = _app(tk_root, out)
+    started: list[list[str]] = []
+    monkeypatch.setattr(app, "start_batch", lambda sources, *_a, **_k: started.append(sources))
+    app.library.tree.selection_set(app.library.tree.get_children())
+    tk_root.update()
+    assert "(2)" in str(app.library.retry_button.cget("text"))
+    app.library._retry_selected()
+    assert len(started) == 1 and len(started[0]) == 2
+    app.close()
+
+
+def test_starting_from_scratch_forgets_everything(
+    tmp_path: Path, tk_root: Any, quiet: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tomd.pipeline.batch import MANIFEST_NAME
+    from tomd.ui import app as app_module
+
+    out = tmp_path / "out"
+    run_batch([TWO_PAGES, FIXED], BatchOptions(out_dir=out, ocr="never"))
+    mine = out / "my-notes.txt"
+    mine.write_text("mine", encoding="utf-8")
+    app = _app(tk_root, out)
+    outputs = [out / str(e.output) for e in app.entries]
+    answers = [False, True]
+    monkeypatch.setattr(app_module, "ask_forget", lambda *_a, **_k: answers.pop(0))
+
+    app.reset()  # memory only: the files stay
+    assert not app.entries and all(p.is_file() for p in outputs)
+    assert (out / MANIFEST_NAME).is_file()  # a fresh, empty library
+    again = run_batch([TWO_PAGES], BatchOptions(out_dir=out, ocr="never"))
+    assert again.planned == 1  # converted again: tomd remembered nothing
+    app.refresh()
+
+    app.reset()  # with the files
+    assert not any(p.exists() for p in outputs) and not (out / "report.md").exists()
+    assert mine.is_file()  # not tomd's: never touched
+    app.close()
