@@ -248,6 +248,26 @@ def test_toc_targets_and_heading_classes_become_headings(tmp_path: Path) -> None
     assert codes.EPUB_HEADING_INFERRED in _codes(doc)
 
 
+def test_the_book_toc_becomes_the_outline(tmp_path: Path) -> None:
+    from tomd.ir import OutlineEntry
+
+    path = book(
+        tmp_path,
+        {"a.xhtml": '<h1 id="c1">One</h1><p>Text.</p>', "b.xhtml": "<h1>Two</h1><p>More.</p>"},
+        nav_entries=[
+            ("a.xhtml#c1", "Chapter  One", [("a.xhtml#s1", "A section")]),
+            ("b.xhtml", "Chapter Two", []),
+            ("b.xhtml#x", "   ", []),  # no label: not an entry
+        ],
+    )
+    outline = read_epub(path).outline
+    assert outline == (
+        OutlineEntry("Chapter One", 1, target="OEBPS/a.xhtml#c1"),
+        OutlineEntry("A section", 2, target="OEBPS/a.xhtml#s1"),
+        OutlineEntry("Chapter Two", 1, target="OEBPS/b.xhtml"),
+    )
+
+
 # --- Links, navigation, boilerplate ---------------------------------------------------------
 
 

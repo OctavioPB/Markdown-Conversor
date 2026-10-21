@@ -35,6 +35,7 @@ from tomd.ir import (
     Image,
     Inline,
     Link,
+    OutlineEntry,
     Paragraph,
     Provenance,
     Text,
@@ -84,6 +85,9 @@ _MIN_IMAGE_SIDE = 32
 # An in-text table of contents: a list, table or block with at least this many links to
 # the book (internal links), which hold at least this share of its text.
 _TOC_MIN_LINKS = 3
+# Outline limits for untrusted files (as in the PDF reader): real books nest 3-4 levels.
+_OUTLINE_MAX_DEPTH = 6
+_OUTLINE_MAX_ENTRIES = 5000
 _TOC_LINK_SHARE = 0.8
 # The short heading just before it ("Contents", "Capítulos:") goes with it.
 _TOC_HEADING_CHARS = 40
@@ -160,8 +164,19 @@ class _Conversion:
         )
         return Document(
             doc_meta, tuple(hoist_footnote_defs(blocks)), tuple(self.assets.values()),
-            tuple(self.diagnostics),
+            tuple(self.diagnostics), self._outline(),
         )  # fmt: skip
+
+    def _outline(self) -> tuple[OutlineEntry, ...]:
+        """The book's own table of contents (nav or NCX) for splitting it (ADR-018)."""
+        entries: list[OutlineEntry] = []
+        for entry in self.package.toc[:_OUTLINE_MAX_ENTRIES]:
+            title = " ".join(entry.label.split())
+            if not title or entry.depth > _OUTLINE_MAX_DEPTH:
+                continue
+            target = entry.path + (f"#{entry.fragment}" if entry.fragment else "")
+            entries.append(OutlineEntry(title, entry.depth, target=target))
+        return tuple(entries)
 
     def _parse_spine(self) -> list[SpineItem]:
         """Parse every spine document; leave out the TOC page and the cover page."""

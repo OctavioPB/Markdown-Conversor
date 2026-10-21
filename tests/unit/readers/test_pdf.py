@@ -761,6 +761,56 @@ def test_figure_inside_form_xobject_gets_page_coordinates(tmp_path: Path) -> Non
     _ = ImageReader
 
 
+# --- Outline (bookmarks, ADR-018) -----------------------------------------------------------
+
+
+def _bookmarked(tmp_path: Path, entries: list[tuple[str, int]]) -> Path:
+    def draw(c: Canvas) -> None:
+        for i, (title, level) in enumerate(entries):
+            _body(c, LEFT, TOP, f"{title}. " + FILLER)
+            c.bookmarkPage(f"p{i}")
+            c.addOutlineEntry(title, f"p{i}", level=level)
+            c.showPage()
+
+    return make_pdf(tmp_path, draw)
+
+
+def test_bookmarks_become_the_outline_and_the_writer_ignores_it(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from tomd.ir import OutlineEntry
+    from tomd.pipeline.dispatch import read_source, render_document
+    from tomd.readers.pdf.ocr import OcrMode
+
+    path = _bookmarked(
+        tmp_path, [("Preface", 0), ("Chapter 1  Basics", 0), ("1.1 Setup", 1), ("Chapter 2", 0)]
+    )
+    doc = read_source(str(path), ocr=OcrMode.NEVER)
+    assert doc.outline == (
+        OutlineEntry("Preface", 1, page=1),
+        OutlineEntry("Chapter 1 Basics", 1, page=2),
+        OutlineEntry("1.1 Setup", 2, page=3),
+        OutlineEntry("Chapter 2", 1, page=4),
+    )
+    # Source information only: the single-file Markdown is the same with or without it.
+    with_outline = render_document(doc)[1].text
+    assert render_document(replace(doc, outline=()))[1].text == with_outline
+
+
+def test_outline_limits_and_no_bookmarks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tomd.readers.pdf import extract
+    from tomd.readers.pdf.extract import open_pdf, read_outline
+
+    plain = make_pdf(tmp_path, lambda c: _filler(c, TOP))
+    with open_pdf(plain) as pdf:
+        assert read_outline(pdf) == ()
+    (tmp_path / "many").mkdir()
+    many = _bookmarked(tmp_path / "many", [(f"Part {i}", 0) for i in range(5)])
+    monkeypatch.setattr(extract, "_OUTLINE_MAX_ENTRIES", 3)
+    with open_pdf(many) as pdf:
+        assert [e.title for e in read_outline(pdf)] == ["Part 0", "Part 1", "Part 2"]
+
+
 # --- Publishers' PDFs (found converting a 431-page technical book) ---------------------------
 
 

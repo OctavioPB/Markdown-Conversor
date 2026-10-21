@@ -1,7 +1,7 @@
 """Intermediate representation: block/inline nodes, diagnostics and provenance."""
 
 from tomd.ir.diagnostics import Diagnostic, Severity
-from tomd.ir.document import Document
+from tomd.ir.document import Document, OutlineEntry
 from tomd.ir.nodes import (
     Asset,
     Block,
@@ -54,6 +54,7 @@ __all__ = [
     "ListBlock",
     "ListItem",
     "MathBlock",
+    "OutlineEntry",
     "Paragraph",
     "Provenance",
     "Row",

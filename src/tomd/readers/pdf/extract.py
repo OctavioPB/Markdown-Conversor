@@ -3,6 +3,7 @@ PDFium objects are closed right after, to stay within the memory budget."""
 
 import ctypes
 import io
+import logging
 import math
 import re
 from collections.abc import Iterator
@@ -16,6 +17,7 @@ import pypdfium2.raw as pdfium_c
 from PIL import Image as PILImage
 
 from tomd.errors import DrmProtectedError, UnreadableInputError
+from tomd.ir import OutlineEntry
 from tomd.readers.pdf.model import Char, PageInfo, PdfFigure, Ruling
 from tomd.readers.pdf.text import is_garbage, normalize_char
 
@@ -46,10 +48,14 @@ _BAND_RATIO = 8.0
 _UPRIGHT_TOLERANCE = 0.05
 # Weights of 600 and above are semibold or heavier (CSS/OpenType convention).
 _BOLD_WEIGHT = 600
+# Outline limits for untrusted files: real books nest 3-4 levels and list a few hundred
+# bookmarks; deeper or longer outlines are damaged or hostile, and cost time to walk.
+_OUTLINE_MAX_DEPTH = 6
 # A text matrix scales glyphs by a plausible factor (0.01 to 1000); outside it the matrix
 # is damaged or degenerate and the nominal font size is kept.
 _MIN_MATRIX_SCALE = 0.01
 _MAX_MATRIX_SCALE = 1000.0
+_OUTLINE_MAX_ENTRIES = 5000
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +104,39 @@ def read_metadata(doc: pdfium.PdfDocument) -> PdfMetadata:
         page_count=len(doc),
         encrypted=encrypted,
     )
+
+
+def read_outline(doc: pdfium.PdfDocument) -> tuple[OutlineEntry, ...]:
+    """The PDF's bookmarks (its outline) as the IR's source outline (ADR-018). Untrusted
+    input: depth and count are capped, cycles are cut by pypdfium2, entries without a
+    title are skipped and a destination outside the document is dropped."""
+    entries: list[OutlineEntry] = []
+    pages = len(doc)
+    # pypdfium2 warns through `logging` on cycles and deep subtrees: expected on damaged
+    # files, handled here (the walk stops), so not printed to the user.
+    logger = logging.getLogger("pypdfium2")
+    level = logger.level
+    logger.setLevel(logging.ERROR)
+    try:
+        for bookmark in doc.get_toc(max_depth=_OUTLINE_MAX_DEPTH):
+            if len(entries) >= _OUTLINE_MAX_ENTRIES:
+                break
+            title = " ".join((bookmark.get_title() or "").split())
+            title = "".join(ch for ch in title if ch.isprintable())
+            if not title:
+                continue
+            page: int | None = None
+            dest = bookmark.get_dest()
+            if dest is not None:
+                index = dest.get_index()
+                if index is not None and 0 <= index < pages:
+                    page = index + 1
+            entries.append(OutlineEntry(title, bookmark.level + 1, page=page))
+    except pdfium.PdfiumError:
+        pass  # a broken outline is no outline: the book is still converted, unsplit
+    finally:
+        logger.setLevel(level)
+    return tuple(entries)
 
 
 def _catalog_language(doc: pdfium.PdfDocument) -> str | None:

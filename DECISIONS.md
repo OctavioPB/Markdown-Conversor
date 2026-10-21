@@ -269,3 +269,61 @@ con texto basura, en español e inglés, dentro del presupuesto de memoria por w
 **Consecuencias:** Un proceso de Tesseract por página (coste fijo de arranque). La
 calidad depende de los datos de idioma instalados. Sin diccionario, un texto OCR previo
 legible pero erróneo no se detecta automáticamente: hay que forzar `--ocr always`.
+
+## ADR-018 — Libros divididos por capítulos: una carpeta por libro, un `.md` por capítulo
+**Estado:** Aceptada (2026-10-20)
+**Contexto:** Un libro técnico de cientos de páginas produce un único `.md` enorme: difícil
+de revisar y de navegar, y poco útil para el sistema de IA local, que trabaja mejor con
+unidades temáticas acotadas. El usuario pide dividirlo por capítulos (2026-10-20) y que el
+resultado sea una carpeta con el nombre del libro. Hoy la salida es un archivo por fuente
+(ARCHITECTURE §7, M06, M20) y el manifiesto guarda una sola salida por documento (ADR-008).
+El lector PDF no lee los marcadores (*outline*) del PDF; el lector EPUB ya lee su índice.
+**Decisión:**
+- **Dónde:** la división es un paso del pipeline *después* de los transforms, una función
+  pura `split_document(doc, opciones)` que devuelve un libro (índice + capítulos, cada uno
+  un `Document`) o nada. Los lectores siguen produciendo un único `Document`; el writer
+  serializa cada parte. Ningún lector decide la división.
+- **IR:** `Document` gana `outline: tuple[OutlineEntry, ...]` (`title`, `level`, `page` en
+  PDF, `target` en EPUB), rellenado con los marcadores del PDF (pypdfium2) y el índice del
+  EPUB. Es información de la fuente, no de presentación.
+- **Fronteras, por fiabilidad:** (1) entradas del `outline` del nivel pedido, ancladas al
+  título de la IR que coincide en su página o destino; (2) si no hay `outline`, títulos del
+  nivel más alto que se repite («Capítulo N», «Chapter N», «N Título»). Si el reparto no es
+  plausible (menos de 2 partes, o partes vacías o desproporcionadas, con umbrales con nombre
+  y motivo), no se divide y se emite `doc.split_skipped` (info): la salida única no pierde
+  nada.
+- **Cuándo:** `--split auto|chapters|none`, por defecto `auto`: divide solo libros PDF o
+  EPUB de al menos ~150 000 caracteres de texto (≈ 80 páginas; el criterio es el texto
+  porque un EPUB no tiene páginas) con fronteras fiables. Wikipedia nunca se divide.
+  `--split-level 1|2` (capítulos por defecto; 2 = secciones).
+- **Salida:** carpeta `<slug-del-libro>/` con `index.md` (título, autoría y enlaces a los
+  capítulos en orden), `NN-<slug-del-capítulo>.md` (`00-` para lo anterior al primer
+  capítulo, si tiene texto) y `assets/` compartido. El nombre de la carpeta se reserva en
+  el manifiesto como hoy los slugs.
+- **Especificación (por archivo):** cada capítulo cumple MARKDOWN_SPEC por sí mismo: un H1
+  igual a su `title` (el título del capítulo; los subniveles suben), notas numeradas 1..n
+  dentro del capítulo (una nota agrupada al final del libro va al capítulo que la cita) e
+  imágenes en `assets/<hash>.<ext>`. El front matter de ADR-010 se amplía con `book` (título
+  del libro), `chapter` (número) y `chapters` (total), tras `title`; el mismo
+  `source_sha256` en todos. Los diagnósticos con página van al capítulo que la contiene; el
+  resto, al índice.
+- **Manifiesto (esquema 3):** tabla `outputs` con las partes de cada documento (ruta,
+  título, páginas); `documents.output` apunta a `<carpeta>/index.md`; los anclajes de la
+  revisión llevan la parte a la que pertenecen.
+**Alternativas consideradas:**
+- No dividir y dejar el troceado al sistema de IA: lo descarta el requisito del usuario, y
+  un archivo de varios MB es inmanejable en la revisión lado a lado.
+- Dividir dentro de cada lector: duplica la lógica en PDF y EPUB y obliga a los lectores a
+  conocer la disposición de la salida (rompe ADR-002).
+- Dividir por tamaño fijo o por número de páginas: corta capítulos y párrafos por la mitad;
+  una unidad sin sentido temático empeora la búsqueda en lugar de mejorarla.
+- Solo títulos detectados, sin marcadores: en el corpus los títulos PDF son una inferencia
+  por tamaño de fuente (ADR-005); los marcadores, cuando existen, los escribió el editor.
+**Consecuencias:** Una fuente deja de ser siempre un archivo: el manifiesto, la biblioteca
+y la revisión de la app (fila por libro, selector de capítulo), `eval_corpus.py` (casos con
+varios archivos esperados) y `remove_output` deben conocer las carpetas. M06 y M20 pasan a
+leerse «por archivo». Cambiar `--split` o `--split-level` no reconvierte un libro ya hecho
+(la clave sigue siendo sha256 + versión, como ya ocurre con `--ocr`): hace falta `--force`.
+La división no reduce la memoria: el libro entero sigue en la IR antes de dividirse, así que
+hay que medir el pico con un libro de ~500 páginas frente al límite de 4 GB, y el timeout
+por documento del lote debe crecer con el número de páginas.

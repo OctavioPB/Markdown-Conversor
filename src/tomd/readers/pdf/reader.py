@@ -1,11 +1,12 @@
 """PDF reader: delegates to a `PdfBackend` (ADR-005)."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tomd.errors import UnsupportedSourceError
 from tomd.ir import Document
 from tomd.readers.pdf.backend import BACKENDS, PdfBackend
+from tomd.readers.pdf.extract import open_pdf, read_outline
 from tomd.readers.pdf.ocr import OcrMode
 
 DEFAULT_BACKEND = "heuristic"
@@ -25,4 +26,9 @@ class PdfReader:
     ocr: OcrMode = OcrMode.AUTO
 
     def read(self, source: str) -> Document:
-        return get_backend(self.backend, self.ocr).convert(Path(source))
+        path = Path(source)
+        document = get_backend(self.backend, self.ocr).convert(path)
+        # The outline is the publisher's, whatever backend read the pages (ADR-018).
+        with open_pdf(path) as pdf:
+            outline = read_outline(pdf)
+        return replace(document, outline=outline)
