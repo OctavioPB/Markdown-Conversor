@@ -8,3 +8,8 @@ dist/
 build/
 *.egg-info/
 out/
+
+# Personal documents dropped at the repo root for local tests (CLAUDE.md: never committed;
+# the golden corpus lives under tests/corpus/).
+/*.pdf
+/*.epub
