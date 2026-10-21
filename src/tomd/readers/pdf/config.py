@@ -83,6 +83,11 @@ class PdfHeuristicsConfig:
     furniture_min_share: float = 0.4
     # ... and on at least this many pages, so a two-page document keeps its first lines.
     furniture_min_pages: int = 3
+    # Or repeated on at least this share of the same-parity pages of its own stretch (from
+    # the first page it is on to the last): a book's running heads change with each
+    # chapter, so "Chapter 1 ■ Title" fills chapter 1's odd pages but only ~6 % of the
+    # book's (a 431-page technical book with nine chapters).
+    furniture_min_run_share: float = 0.6
     # Heights within this × S count as "the same position".
     furniture_y_tolerance: float = 1.0
     # Header texts this similar (difflib ratio, letters and digits only) are the same

@@ -57,10 +57,11 @@ def link_footnotes(
         for l_index, line in enumerate(c.block.lines):
             for s_index, span in enumerate(line.spans):
                 if span.superscript:
+                    # The line's page, not the block's: a paragraph that runs over a page
+                    # break belongs to its first page, a call in its second part to the
+                    # page whose foot holds the note.
                     for token in _tokens(span.text):
-                        calls.setdefault((c.block.page, token), []).append(
-                            (b_index, l_index, s_index)
-                        )
+                        calls.setdefault((line.page, token), []).append((b_index, l_index, s_index))
 
     paired: dict[tuple[int, int, int], list[str]] = {}
     notes_out: list[PdfNote] = []

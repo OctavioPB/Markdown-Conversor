@@ -39,10 +39,17 @@ _FLAG_FORCE_BOLD = 1 << 18
 _RULE_THICKNESS = 2.0
 # Shorter paths are glyph-like marks (underlines of one letter, bullets), not rules.
 _MIN_RULE_LENGTH = 8.0
+# A filled rectangle at least this many times wider than tall is a band (a shaded table
+# row, ~360 x 25 pt in a technical book); squarer fills are boxes and backgrounds.
+_BAND_RATIO = 8.0
 # Characters rotated by more than this (radians, ~3°) are not horizontal text.
 _UPRIGHT_TOLERANCE = 0.05
 # Weights of 600 and above are semibold or heavier (CSS/OpenType convention).
 _BOLD_WEIGHT = 600
+# A text matrix scales glyphs by a plausible factor (0.01 to 1000); outside it the matrix
+# is damaged or degenerate and the nominal font size is kept.
+_MIN_MATRIX_SCALE = 0.01
+_MAX_MATRIX_SCALE = 1000.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +189,11 @@ def _page_rulings(page: pdfium.PdfPage) -> list[Ruling]:
                     Ruling(False, x0, y0, y1),
                     Ruling(False, x1, y0, y1),
                 ]
+            elif fill.value and not stroke.value and width >= _BAND_RATIO * height:
+                # A filled band (a table's shaded header row, often with rounded corners,
+                # so any outline): its top and bottom edges bound that row like rules.
+                # Not its sides: shading is no column border.
+                rulings += [Ruling(True, y0, x0, x1), Ruling(True, y1, x0, x1)]
     return rulings
 
 
@@ -305,6 +317,7 @@ def _page_chars(textpage: pdfium.PdfTextPage) -> tuple[list[Char], int, int]:
     flags = ctypes.c_int()
     origin_x = ctypes.c_double()
     origin_y = ctypes.c_double()
+    matrix = pdfium_c.FS_MATRIX()
     fonts: dict[tuple[bytes, int, int], tuple[str, bool, bool, bool]] = {}
     chars: list[Char] = []
     garbage = 0
@@ -348,7 +361,7 @@ def _page_chars(textpage: pdfium.PdfTextPage) -> tuple[list[Char], int, int]:
         if key not in fonts:
             fonts[key] = _font_style(name_buffer.value, flags.value, weight)
         font, bold, italic, mono = fonts[key]
-        size = pdfium_c.FPDFText_GetFontSize(raw, i)
+        size = _effective_size(raw, i, matrix)
         chars.append(
             Char(
                 text=text,
@@ -365,6 +378,22 @@ def _page_chars(textpage: pdfium.PdfTextPage) -> tuple[list[Char], int, int]:
             )
         )
     return chars, garbage, rotated
+
+
+def _effective_size(raw: Any, index: int, matrix: Any) -> float:
+    """The size a character is drawn at. PDFium reports the font size of the text
+    operator, before the text and page matrices: many publishers' PDFs set the font at
+    size 1 and scale it by 10.5 with the matrix, which would make every line 1 pt tall and
+    break every threshold expressed in font sizes (§2). The matrix's vertical scale fixes
+    it; a degenerate matrix keeps the nominal size."""
+    # A negative size draws mirrored text (some covers do): the size is its magnitude.
+    nominal = abs(float(pdfium_c.FPDFText_GetFontSize(raw, index)))
+    if not pdfium_c.FPDFText_GetMatrix(raw, index, ctypes.byref(matrix)):
+        return nominal
+    scale = math.hypot(matrix.c, matrix.d)
+    if not _MIN_MATRIX_SCALE <= scale <= _MAX_MATRIX_SCALE:
+        return nominal
+    return nominal * scale
 
 
 def _is_upright(angle: float) -> bool:

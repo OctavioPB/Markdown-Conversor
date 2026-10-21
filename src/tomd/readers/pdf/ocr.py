@@ -310,8 +310,13 @@ class _OcrLine:
         quartile rather than the tallest, so one word swollen by noise does not set the
         size."""
         text = [w for w in self.words if sum(ch.isalnum() for ch in w[0]) > 1] or self.words
-        heights = sorted(self.baseline_at((w[1] + w[3]) / 2) - w[2] for w in text)
-        return heights[-((1 - len(heights)) * 3 // 4)]  # ceiling: two words -> the taller
+        # Over artwork Tesseract's baseline can lie above the words: then the word's own
+        # box height stands in, so no size is ever zero or negative.
+        heights = sorted(
+            (h if (h := self.baseline_at((w[1] + w[3]) / 2) - w[2]) > 0 else w[4] - w[2])
+            for w in text
+        )
+        return max(heights[-((1 - len(heights)) * 3 // 4)], 1)  # ceiling: two -> the taller
 
 
 def lines_from_hocr(
@@ -371,7 +376,7 @@ def parse_hocr(
         common = median(caps[ln.paragraph])
         own = ln.cap_height if ln.cap_height > common * cfg.ocr_own_size_ratio else common
         size_px = own / cfg.ocr_cap_height
-        size = round(size_px * scale * 2) / 2 or 1.0
+        size = max(round(size_px * scale * 2) / 2, 1.0)
         # Markers first: a bullet often has the low confidence of a speckle.
         marker = _bullet_marker(words, size_px, cfg)
         kept = [w for w in words[marker:] if not _is_speckle(w[0], w[5], cfg)]

@@ -181,6 +181,40 @@ def _touch(a: Ruling, b: Ruling, tol: float) -> bool:
 # --- Tables without vertical rules (§9.2) ------------------------------------------------
 
 
+# Rules at this many heights (top, bottom and at least two between) separate every row,
+# not just the header from the body as in a booktabs table (three rules).
+_RULED_ROWS = 4
+
+
+def _bands(chars: list[Char], ys: list[float]) -> list[list[Char]]:
+    """Characters by the band between consecutive rules (`ys` from top to bottom)."""
+    bands: list[list[Char]] = [[] for _ in ys[1:]]
+    for ch in chars:
+        middle = (ch.top + ch.bottom) / 2
+        for k in range(len(ys) - 1):
+            if ys[k + 1] < middle < ys[k]:
+                bands[k].append(ch)
+                break
+    return bands
+
+
+def _join_segments(rules: list[Ruling], tol: float) -> list[Ruling]:
+    """Horizontal rules at the same height that meet end to end are one rule: layout
+    programs often draw a table's row borders cell by cell (one segment per column)."""
+    joined: list[Ruling] = []
+    for rule in sorted(rules, key=lambda r: (round(r.position / tol), r.start)):
+        last = joined[-1] if joined else None
+        if (
+            last is not None
+            and abs(last.position - rule.position) <= tol
+            and rule.start <= last.end + tol
+        ):
+            joined[-1] = Ruling(True, last.position, last.start, max(last.end, rule.end))
+        else:
+            joined.append(rule)
+    return joined
+
+
 def find_rule_tables(
     rulings: list[Ruling],
     chars: list[Char],
@@ -193,6 +227,7 @@ def find_rule_tables(
     tol = cfg.table_snap_tolerance
     vertical = [r for r in rulings if not r.horizontal]
     free = [r for r in rulings if r.horizontal and not any(_touch(r, v, tol) for v in vertical)]
+    free = _join_segments(free, tol)
     groups: list[list[Ruling]] = []
     for rule in sorted(free, key=lambda r: (r.start, r.end, -r.position)):
         for group in groups:
@@ -218,12 +253,22 @@ def find_rule_tables(
             for c in remaining
             if x0 <= (c.x0 + c.x1) / 2 <= x1 and bottom < (c.top + c.bottom) / 2 < top
         ]
-        rows = _char_rows(inside, cfg)
+        mids = ys[1:-1]
+        if len(ys) >= _RULED_ROWS:
+            # A rule under every row: each band between two rules is one row, however many
+            # lines its cells wrap to. The header is the first band when it is bold.
+            rows = [r for r in _bands(inside, ys) if any(not c.is_space for c in r)]
+            first = [c for c in rows[0] if not c.is_space] if rows else []
+            header = 1 if first and all(c.bold for c in first) else 0
+            wrapped = False
+        else:
+            rows = _char_rows(inside, cfg)
+            header = sum(1 for row in rows if mids and _row_mid(row) > mids[0])
+            wrapped = True
         if len(rows) < 2:
             continue
-        mids = ys[1:-1]
-        header = sum(1 for row in rows if mids and _row_mid(row) > mids[0])
-        table = _table_from_rows(rows, header, page, (x0, bottom, x1, top), source, cfg, 0.9)
+        table = _table_from_rows(rows, header, page, (x0, bottom, x1, top), source, cfg, 0.9,
+                                 merge_wrapped=wrapped)  # fmt: skip
         if table is None:
             continue
         taken = {id(c) for c in inside}
@@ -363,7 +408,11 @@ def _table_from_rows(
     source: str,
     cfg: PdfHeuristicsConfig,
     confidence: float,
+    *,
+    merge_wrapped: bool = True,
 ) -> PdfTable | None:
+    """`merge_wrapped`: a row with an empty first cell continues the row above (rows found
+    by baselines); off when rules already delimit the rows."""
     columns = _columns(rows, cfg)
     if len(columns) < 2:
         return None
@@ -377,7 +426,8 @@ def _table_from_rows(
                 cells[index].append(ch)
         filled = sum(1 for cell in cells if any(not c.is_space for c in cell))
         # A row with an empty first cell continues the row above (a wrapped cell).
-        if grid and len(grid) > header and not any(not c.is_space for c in cells[0]) and filled:
+        continues = not any(not c.is_space for c in cells[0]) and filled
+        if merge_wrapped and grid and len(grid) > header and continues:
             for k, cell in enumerate(cells):
                 grid[-1][k].extend(cell)
             continue

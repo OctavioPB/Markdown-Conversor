@@ -385,3 +385,10 @@ def test_installed_app_uses_its_bundled_tesseract(
     assert engine is not None
     assert Path(engine.command) == bundled / "tesseract.exe"
     assert engine.tessdata == str(bundled / "tessdata")
+
+
+def test_a_baseline_above_the_words_never_gives_a_negative_size() -> None:
+    # Over a cover's artwork Tesseract reports a baseline 300 px above the words.
+    line = _line([_word("AP", (300, 1000, 380, 1060))], (300, 1000, 380, 1060), -360)
+    (only,) = lines_from_hocr(_hocr([line]), 1, A4[1], SCALE, DEFAULT_CONFIG)
+    assert only.size > 0

@@ -87,6 +87,9 @@ DEFAULT_OCR_LANGUAGES = "spa+eng"
 _MIN_TEXT_CHARS = 20
 # A guessed hyphen join lowers a paragraph's confidence to this (ADR-015).
 _GUESSED_HYPHEN_CONFIDENCE = 0.8
+# Lists nest at most this deep; deeper items stay at the last level (Markdown readers and
+# people stop following nesting long before).
+_MAX_LIST_DEPTH = 8
 # Generator defaults and file names that PDF producers leave in /Title.
 _IMPLAUSIBLE_TITLE = re.compile(
     r"^(untitled|sin título|document\d*|microsoft (word|powerpoint) - .*"
@@ -197,11 +200,38 @@ def analyze_layout(
                 if not is_page_number(block, heights[page.number], cfg):
                     blocks.append(block)
     result.blocks = merge_across_pages(blocks, result.stats)
-    sizes = heading_sizes(result.blocks, result.stats, cfg)
-    result.classified = _promote_title(
-        [classify(b, result.stats, sizes, heights[b.page], cfg) for b in result.blocks]
+    result.classified = classify_blocks(
+        result.blocks, result.stats, heights, result.ocr_confidence, cfg
     )
     return result
+
+
+def classify_blocks(
+    blocks: list[TextBlock],
+    stats: DocStats,
+    heights: dict[int, float],
+    ocr_confidence: dict[int, float],
+    cfg: PdfHeuristicsConfig,
+) -> list[Classified]:
+    """Classify every block (§6), then make the largest heading on page 1 the title.
+
+    In a document with reliable pages, pages read by OCR with low confidence (a cover's
+    artwork read as "OIE", "WX") take no part in the heading levels: their huge "letters"
+    would take the top levels and push every real heading of the book down to H5. Their
+    text stays, as paragraphs, under the page's pdf.ocr_low_confidence warning. A
+    document that is all a poor scan keeps its headings: there is nothing better."""
+    unreliable = {page for page, mean in ocr_confidence.items() if mean < cfg.ocr_min_confidence}
+    if all(b.page in unreliable for b in blocks):
+        unreliable = set()
+    sizes = heading_sizes([b for b in blocks if b.page not in unreliable], stats, cfg)
+    classified = [classify(b, stats, sizes, heights[b.page], cfg) for b in blocks]
+    classified = [
+        replace(c, kind=Kind.PARAGRAPH, level=0)
+        if c.kind is Kind.HEADING and c.block.page in unreliable
+        else c
+        for c in classified
+    ]
+    return _promote_title(classified)
 
 
 def _report_lost_tables(
@@ -396,7 +426,10 @@ class HeuristicBackend:
             inlines, _ = block_inlines(note.block)
             if inlines:
                 blocks.append(FootnoteDef(note.key, (Paragraph(tuple(inlines)),), note.provenance))
-        if not title and meta.title and not _IMPLAUSIBLE_TITLE.match(meta.title):
+        # The publisher's metadata title beats a title read by OCR: on a scanned cover the
+        # largest "text" is often the artwork read as letters ("AP").
+        plausible = bool(meta.title) and not _IMPLAUSIBLE_TITLE.match(meta.title or "")
+        if plausible and (not title or 1 in layout.ocr_pages):
             title = meta.title
         authors: tuple[str, ...] = ()
         if meta.author and meta.author.strip().lower() not in _IMPLAUSIBLE_AUTHOR:
@@ -479,9 +512,9 @@ def _build_blocks(
 def _list_block(items: list[Classified], source: str) -> ListBlock:
     """Nest list items by the x position of their markers (§6)."""
     first = items[0]
-    tolerance = first.block.size * DEFAULT_CONFIG.list_level_tolerance
+    tolerance = abs(first.block.size) * DEFAULT_CONFIG.list_level_tolerance
 
-    def build(start: int, x: float) -> tuple[ListBlock, int]:
+    def build(start: int, x: float, depth: int) -> tuple[ListBlock, int]:
         entries: list[ListItem] = []
         head = items[start]
         i = start
@@ -490,8 +523,10 @@ def _list_block(items: list[Classified], source: str) -> ListBlock:
             ix = item.block.x0
             if ix < x - tolerance:
                 break
-            if ix > x + tolerance and entries:
-                sub, i = build(i, ix)
+            # Deeper than Markdown nesting is useful: the item stays at this level (and
+            # the recursion stays bounded on hostile or odd layouts).
+            if ix > x + tolerance and entries and depth < _MAX_LIST_DEPTH:
+                sub, i = build(i, ix, depth + 1)
                 last = entries[-1]
                 entries[-1] = ListItem((*last.blocks, sub), last.provenance)
                 continue
@@ -501,11 +536,16 @@ def _list_block(items: list[Classified], source: str) -> ListBlock:
             i += 1
         return ListBlock(tuple(entries), head.ordered, head.start, _provenance(head, source)), i
 
-    lst, consumed = build(0, first.block.x0)
-    if consumed < len(items):  # a shallower item after the first: start a sibling list
-        rest = _list_block(items[consumed:], source)
-        return ListBlock(lst.items + rest.items, lst.ordered, lst.start, lst.provenance)
-    return lst
+    # A shallower item after the first starts a sibling run, joined to the same list. A
+    # loop, not recursion: a book's index can be a list of thousands of runs.
+    lst, consumed = build(0, first.block.x0, 1)
+    entries = list(lst.items)
+    while consumed < len(items):
+        rest, used = build(consumed, items[consumed].block.x0, 1)
+        entries.extend(rest.items)
+        # Past the run's first item at least, whatever the geometry: never stuck.
+        consumed = max(used, consumed + 1)
+    return ListBlock(tuple(entries), lst.ordered, lst.start, lst.provenance)
 
 
 def _provenance(c: Classified, source: str) -> Provenance:

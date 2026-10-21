@@ -759,3 +759,221 @@ def test_figure_inside_form_xobject_gets_page_coordinates(tmp_path: Path) -> Non
     x0, y0, x1, y1 = figure.bbox
     assert abs(x0 - 150) < 2 and abs(y0 - 400) < 2 and abs(x1 - 450) < 2 and abs(y1 - 550) < 2
     _ = ImageReader
+
+
+# --- Publishers' PDFs (found converting a 431-page technical book) ---------------------------
+
+
+def _scaled_line(c: Canvas, x: float, y: float, text: str, size: float, font: str) -> None:
+    """Text set at font size 1 and scaled by the text matrix, as many publishers' PDFs do."""
+    t = c.beginText()
+    t.setTextTransform(size, 0, 0, size, x, y)
+    t.setFont(font, 1)
+    t.textOut(text)
+    c.drawText(t)
+
+
+def test_text_scaled_by_the_matrix_has_its_drawn_size(tmp_path: Path) -> None:
+    def draw(c: Canvas) -> None:
+        _scaled_line(c, LEFT, TOP, "A Heading Set Large", 16, "Helvetica-Bold")
+        for i in range(5):
+            _scaled_line(c, LEFT, TOP - 30 - 13 * i, FILLER, 10.5, "Helvetica")
+
+    doc = convert(make_pdf(tmp_path, draw))
+    # Not five one-line paragraphs of 1 pt text: a heading, then one paragraph.
+    assert isinstance(doc.blocks[0], Heading)
+    assert len(doc.blocks) == 2 and isinstance(doc.blocks[1], Paragraph)
+
+
+def test_running_heads_that_change_with_each_chapter_are_removed(tmp_path: Path) -> None:
+    chapters = ("Basics", "Routing", "Security", "Storage", "Networks")
+
+    def draw(c: Canvas) -> None:
+        for n, chapter in enumerate(chapters, start=1):
+            for page in range(6):
+                number = (n - 1) * 6 + page + 1
+                c.setFont("Helvetica", 9)
+                head = f"Chapter {n} \u25a0 {chapter} {number}" if number % 2 else f"{number} Book"
+                c.drawString(LEFT, A4[1] - 40, head)
+                for i in range(4):
+                    _body(c, LEFT, TOP - 40 - 14 * i, f"Page {number} line {i}. " + FILLER[:40])
+                c.showPage()
+
+    doc = convert(make_pdf(tmp_path, draw))
+    text = str(doc.blocks)
+    # Each chapter's head is on 3 of the book's 15 odd pages (20 %, below the share rule)
+    # but on every odd page of its own chapter.
+    assert "\u25a0" not in text and "Page 30 line 3" in text
+
+
+def test_a_call_after_a_page_break_finds_its_note(tmp_path: Path) -> None:
+    from tomd.ir import FootnoteDef, FootnoteRef
+
+    def draw(c: Canvas) -> None:
+        for i in range(4):
+            _body(c, LEFT, TOP - 14 * i, FILLER)
+        # The paragraph runs on to the next page, where its call and its note are.
+        _body(c, LEFT, 60, "This paragraph starts at the foot of the first page and")
+        c.showPage()
+        x = _body(c, LEFT, TOP, "goes on here with a claim")
+        x = _sup(c, x, TOP, "1")
+        _body(c, x, TOP, " that needs a source.")
+        for i in range(4):
+            _body(c, LEFT, TOP - 30 - 14 * i, FILLER)
+        c.setFont("Helvetica", 6)
+        c.drawString(LEFT, 84, "1")
+        c.setFont("Helvetica", 8)
+        c.drawString(LEFT + 6, 80, "The source of the claim.")
+
+    doc = convert(make_pdf(tmp_path, draw))
+    assert [b for b in doc.blocks if isinstance(b, FootnoteDef)]
+    refs = [n for b in doc.blocks if isinstance(b, Paragraph) for n in b.children]
+    assert any(isinstance(n, FootnoteRef) for n in refs)
+
+
+def test_ruled_rows_with_a_shaded_header_and_cell_by_cell_borders(tmp_path: Path) -> None:
+    from tomd.ir import Table
+
+    def draw(c: Canvas) -> None:
+        _filler(c, TOP)
+        c.setFillColorRGB(0.2, 0.3, 0.5)
+        c.rect(LEFT, 580, 300, 24, stroke=0, fill=1)  # the shaded header row
+        c.setFillColorRGB(1, 1, 1)
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(LEFT + 6, 588, "SUBJECT")
+        c.drawString(LEFT + 126, 588, "EXAMPLE")
+        c.setFillColorRGB(0, 0, 0)
+        # Cells of both columns wrap: only the rules tell the rows apart.
+        rows = [
+            (("Carves out", "data strategy"), ("Frameworks and models,", "and the tools")),
+            (("Social",), ("Teamwork",)),
+            (("Personal",), ("Strengths and weaknesses",)),
+        ]
+        y = 580
+        c.setLineWidth(0.5)
+        for subject, lines in rows:
+            height = 14 * len(lines) + 8
+            c.setFont("Helvetica", 9)
+            for k, part in enumerate(subject):
+                c.drawString(LEFT + 6, y - 14 - 14 * k, part)
+            for k, line in enumerate(lines):
+                c.drawString(LEFT + 126, y - 14 - 14 * k, line)
+            y -= height
+            c.line(LEFT, y, LEFT + 120, y)  # each row's border drawn cell by cell
+            c.line(LEFT + 120, y, LEFT + 300, y)
+        _filler(c, y - 40)
+
+    doc = convert(make_pdf(tmp_path, draw))
+    (table,) = [b for b in doc.blocks if isinstance(b, Table)]
+    assert len(table.header_rows) == 1 and len(table.body_rows) == 3
+    first = table.body_rows[0].cells
+    assert first[0].blocks == (Paragraph((Text("Carves out data strategy"),)),)
+    assert first[1].blocks == (Paragraph((Text("Frameworks and models, and the tools"),)),)
+
+
+def test_a_sentence_citing_a_dotted_table_number_is_no_caption() -> None:
+    from tomd.readers.pdf.figures import FIGURE_CAPTION, TABLE_CAPTION, is_caption
+
+    assert not is_caption(TABLE_CAPTION, "Table 2.3 summarizes the duties of the role.")
+    assert is_caption(TABLE_CAPTION, "Table 2.3: Duties")
+    assert is_caption(TABLE_CAPTION, "Tabla 4-1 Datos")
+    assert not is_caption(FIGURE_CAPTION, "Figure 2.3 shows the layers.")
+
+
+def test_long_runs_of_list_items_do_not_recurse(tmp_path: Path) -> None:
+    from tomd.readers.pdf.backend import _list_block
+    from tomd.readers.pdf.classify import Classified, Kind
+    from tomd.readers.pdf.model import Line, Span, TextBlock
+
+    def item(x: float, n: int) -> Classified:
+        line = Line((Span(f"- entry {n}", False, False, False, 10.0),), x, x + 80,
+                    700.0, 690.0, 692.0, 10.0, 1)  # fmt: skip
+        return Classified(TextBlock([line]), Kind.LIST_ITEM)
+
+    # 3000 sibling runs (an index: each entry shallower than the one before) and a
+    # staircase deeper than Markdown nesting: no RecursionError, nothing lost.
+    zigzag = [item(72.0 if n % 2 else 100.0, n) for n in range(6000)]
+    stairs = [item(72.0 + 20 * n, n) for n in range(50)]
+    for items in (zigzag, stairs):
+        lst = _list_block(items, "x.pdf")
+
+        def count(block: ListBlock) -> int:
+            nested = (b for i in block.items for b in i.blocks if isinstance(b, ListBlock))
+            return len(block.items) + sum(count(b) for b in nested)
+
+        assert count(lst) == len(items)
+
+
+def test_more_than_six_heading_sizes_stay_within_h6(tmp_path: Path) -> None:
+    def draw(c: Canvas) -> None:
+        for k, size in enumerate((40, 34, 30, 26, 22, 19, 17, 15)):
+            c.setFont("Helvetica-Bold", size)
+            c.drawString(LEFT, TOP - 50 * k, f"Title {k}")
+        for i in range(8):
+            _body(c, LEFT, 300 - 14 * i, FILLER)
+
+    doc = convert(make_pdf(tmp_path, draw))
+    assert all(b.level <= 6 for b in doc.blocks if isinstance(b, Heading))
+
+
+def test_metadata_title_beats_a_title_read_by_ocr_on_page_one() -> None:
+    from dataclasses import replace
+
+    import tomd.readers.pdf.backend as backend_module
+
+    corpus = Path(__file__).resolve().parents[2] / "corpus"
+    source = corpus / "pdf-ocr" / "scan-clean-300dpi" / "input.pdf"
+    if not source.is_file():
+        pytest.skip("OCR corpus case missing")
+    from tomd.pipeline.dispatch import read_source
+
+    doc = read_source(str(source))
+    if not any(d.code == codes.PDF_OCR_APPLIED for d in doc.diagnostics):
+        pytest.skip("no OCR engine here")
+    meta_title = "Publisher Title"
+    original = backend_module.read_metadata
+
+    def with_title(pdf: object) -> object:
+        return replace(original(pdf), title=meta_title)  # type: ignore[arg-type]
+
+    backend_module.read_metadata = with_title  # type: ignore[assignment]
+    try:
+        assert read_source(str(source)).meta.title == meta_title
+    finally:
+        backend_module.read_metadata = original
+
+
+def test_low_confidence_ocr_pages_do_not_set_the_heading_levels() -> None:
+    from tomd.readers.pdf.backend import classify_blocks
+    from tomd.readers.pdf.classify import Kind
+    from tomd.readers.pdf.config import DEFAULT_CONFIG
+    from tomd.readers.pdf.model import DocStats, Line, Span, TextBlock
+
+    def block(text: str, size: float, page: int, y: float = 500.0) -> TextBlock:
+        span = Span(text, True, False, False, size)
+        return TextBlock([Line((span,), 72.0, 300.0, y + size, y, y, size, page)])
+
+    body = [block(FILLER, 10.0, p, 300.0) for p in (1, 2, 3)]
+    cover = [block("OIE", 60.0, 1), block("WX", 40.0, 1)]  # artwork read by OCR
+    real = [block("Chapter One", 20.0, 2), block("A Section", 14.0, 3)]
+    blocks = [*cover, body[0], real[0], body[1], real[1], body[2]]
+    classified = classify_blocks(
+        blocks, DocStats(10.0, 12.0), {1: 800.0, 2: 800.0, 3: 800.0}, {1: 0.41}, DEFAULT_CONFIG
+    )
+    kinds = {c.block.text: (c.kind, c.level) for c in classified}
+    assert kinds["OIE"][0] is Kind.PARAGRAPH and kinds["WX"][0] is Kind.PARAGRAPH
+    # The book's own headings keep the top levels.
+    assert kinds["Chapter One"] == (Kind.HEADING, 1) and kinds["A Section"] == (Kind.HEADING, 2)
+
+
+def test_a_title_set_flush_right_is_one_heading(tmp_path: Path) -> None:
+    def draw(c: Canvas) -> None:
+        c.setFont("Helvetica-Bold", 24)
+        c.drawRightString(450, TOP, "Software Architect Capability")
+        c.drawRightString(450, TOP - 30, "Model")
+        for i in range(6):
+            _body(c, LEFT, TOP - 120 - 14 * i, FILLER)
+
+    doc = convert(make_pdf(tmp_path, draw))
+    headings = [b for b in doc.blocks if isinstance(b, Heading)]
+    assert len(headings) == 1 and "Capability Model" in str(headings[0])

@@ -80,7 +80,9 @@ def classify(
         bold = all(line.bold for line in block.lines)
         if ratio >= cfg.heading_min_size:
             size = round(block.size / cfg.heading_size_tolerance) * cfg.heading_size_tolerance
-            level = sizes.index(size) + 1 if size in sizes else 2
+            # More than six heading sizes (a cover set in many sizes): the smaller ones
+            # share the deepest level; normalize_headings compresses the rest (M07).
+            level = min(sizes.index(size) + 1, 6) if size in sizes else 2
             if numbered:
                 level = min(numbered.group(1).count(".") + 2, 6)
             # Barely above the threshold is a weak signal; well above it is strong.

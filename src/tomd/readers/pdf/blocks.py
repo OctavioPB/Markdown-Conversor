@@ -152,7 +152,14 @@ def _continues(
         # Centred lines leave about as much room on the left as on the right of the page's
         # text area; a paragraph's short last line hugs the left margin instead.
         centred = _is_centred(prev, bounds, S, cfg) and _is_centred(line, bounds, S, cfg)
-        if not (first_line_indent or centred):
+        # A title set flush right ("Software Architect Capability" / "Model" on a chapter
+        # opening page): heading-sized lines that share their right edge. Only headings:
+        # ragged-left body text is too rare to risk paragraph boundaries for.
+        flush_right = (
+            min(prev.size, line.size) >= cfg.heading_min_size * S
+            and abs(line.x1 - prev.x1) <= cfg.block_indent_change * S * 0.25
+        )
+        if not (first_line_indent or centred or flush_right):
             return False
     ends_paragraph = prev.text.rstrip().endswith(_FINAL_PUNCT)
     if _opens_with_run_in_label(line) and (ends_paragraph or _opens_with_run_in_label(prev)):

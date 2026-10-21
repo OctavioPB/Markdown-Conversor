@@ -57,14 +57,31 @@ def remove_furniture(
                 cluster.pages.add(number)
                 membership.setdefault((number, index), []).append(cluster)
 
+    numbers = sorted(heights)
     per_parity = {parity: sum(1 for p in pages if p.number % 2 == parity) for parity in (0, 1)}
     per_parity[_ANY_PARITY] = len(pages)
+
+    def is_furniture(cluster: _Cluster, parity: int) -> bool:
+        count = len(cluster.pages)
+        if count < cfg.furniture_min_pages:
+            return False
+        if count >= cfg.furniture_min_share * per_parity[parity]:
+            return True
+        # A running head of one chapter: dense over the pages it spans. Only with words:
+        # lone numbers near an edge (the page numbers of a contents list) are not one.
+        if not any(c.isalpha() for c in cluster.text):
+            return False
+        first, last = min(cluster.pages), max(cluster.pages)
+        stretch = sum(
+            1 for n in numbers if first <= n <= last and (parity == _ANY_PARITY or n % 2 == parity)
+        )
+        return count >= cfg.furniture_min_run_share * stretch
+
     furniture = {
         id(cluster)
         for slot, group in clusters.items()
         for cluster in group
-        if len(cluster.pages)
-        >= max(cfg.furniture_min_pages, cfg.furniture_min_share * per_parity[slot.parity])
+        if is_furniture(cluster, slot.parity)
     }
     removed = 0
     kept: dict[int, list[Line]] = {}

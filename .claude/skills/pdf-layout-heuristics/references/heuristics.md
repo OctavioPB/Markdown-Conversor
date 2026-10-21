@@ -24,6 +24,11 @@ Extrae por carácter: `(text, x0, y0, x1, y1, fontname, size, flags, color)`. Ob
 `bold`/`italic` de los flags o, si faltan, del nombre de la fuente (`-Bold`, `-It`,
 `Black`, `Semibold`).
 
+**`size` es el tamaño dibujado:** el tamaño del operador `Tf` por la escala vertical de la
+matriz efectiva del carácter (`FPDFText_GetMatrix`). Muchos PDF de editorial fijan la
+fuente a tamaño 1 y la escalan con la matriz; con el tamaño nominal todo el texto mide
+1 pt y fallan todos los umbrales relativos (cada línea acaba siendo un párrafo).
+
 **Tagged PDF:** si existe `StructTreeRoot`, compara el texto que cubre el árbol con el
 extraído por coordenadas. Si cubre al menos el 90 % y contiene etiquetas `H1..H6`, `P`,
 `L` o `Table`, úsalo. Muchos generadores producen árboles vacíos o con todo como `P`; en
@@ -78,6 +83,12 @@ Candidatos: bloques en el 8 % superior o inferior del área de la página. Norma
 menos el 40 % de las páginas, en una posición Y parecida (±`1·S`), es mobiliario y se
 elimina. Considera páginas pares e impares por separado, porque en los libros la cabecera
 alterna entre título del libro y título del capítulo.
+
+Las cabeceras de un libro cambian con cada capítulo («Chapter 3 ■ Título»): ninguna llega
+al 40 % del libro. Por eso un texto con letras también es mobiliario si aparece en al menos
+el 60 % de las páginas de su paridad dentro de su propio tramo (de la primera a la última
+página en que aparece), con un mínimo de 3 páginas. Los textos que son solo números no usan
+esta regla: serían los números de página de un índice.
 
 Números de página sueltos (`#`, `- # -`, `Página #`) se eliminan aunque no se repitan
 literalmente.
@@ -139,6 +150,11 @@ en `Provenance.confidence`.
 
 Es la parte menos fiable de cualquier enfoque heurístico. Estrategia:
 1. Si hay líneas vectoriales que forman una rejilla, úsalas para definir celdas.
+   Sin verticales, los filetes horizontales de igual anchura delimitan la tabla; los
+   segmentos que se tocan a la misma altura son un solo filete (bordes dibujados celda a
+   celda), y una franja rellena muy apaisada (cabecera sombreada) aporta sus bordes
+   superior e inferior. Con 4 o más filetes, cada franja entre filetes es una fila,
+   aunque sus celdas ocupen varias líneas.
 2. Si no, detecta columnas por alineación consistente de `x0`/`x1` en al menos 3 filas
    consecutivas.
 3. Si ninguna de las dos funciona con confianza, emite el bloque como párrafos con el

@@ -10,12 +10,13 @@ from tomd.readers.pdf.model import DocStats, PdfFigure, TextBlock
 from tomd.readers.pdf.tables import PdfTable
 
 FIGURE_CAPTION = re.compile(
-    r"^(?:fig(?:ure|ura)?s?\.?|imagen|gr[aá]fico|ilustraci[oó]n|l[aá]mina|plate|chart)\s*\d+",
+    r"^(?:fig(?:ure|ura)?s?\.?|imagen|gr[aá]fico|ilustraci[oó]n|l[aá]mina|plate|chart)\s*\d+(?:[.\-]\d+)*",
     re.IGNORECASE,
 )
 # A block at most this × its font size away from a float, beside it, wraps around it.
 _BESIDE_GAP = 2.5
-TABLE_CAPTION = re.compile(r"^(?:tab(?:le|la)|cuadro)\.?\s*\d+", re.IGNORECASE)
+# The number may be dotted or dashed ("Table 2.3", "Tabla 4-1", common in books).
+TABLE_CAPTION = re.compile(r"^(?:tab(?:le|la)|cuadro)\.?\s*\d+(?:[.\-]\d+)*", re.IGNORECASE)
 # After the label and number, a caption goes on with punctuation, ends, or starts its
 # title; a sentence that cites a float ("Table 2 shows...") goes on in lower case.
 # Case-sensitive on purpose, unlike the labels.
