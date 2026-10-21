@@ -1,0 +1,14 @@
+# Test inputs and fixtures are bytes, never text: with core.autocrlf (Windows) git would
+# rewrite line endings inside PDFs and EPUBs that contain no NUL byte, and checkouts would
+# get corrupted files (and a test failing for no reason).
+*.pdf binary
+*.epub binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.sqlite binary
+*.zip binary
+*.gz binary
+# Recorded Wikipedia fixtures are compared byte for byte.
+tests/**/*.html -text
