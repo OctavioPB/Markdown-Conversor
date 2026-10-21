@@ -65,6 +65,22 @@ Contrato del Writer. Cada regla numerada debe tener al menos un test en
 - **M22** — La misma IR produce bytes idénticos. Se prohíbe iterar sobre `set` o depender
   del orden de inserción de dicts construidos a partir de fuentes no ordenadas.
 
+## Libros divididos por capítulos (ADR-018)
+
+- **M23** — Un libro dividido es una carpeta `<slug-del-libro>/` con `index.md`, un
+  `NN-<slug-del-capítulo>.md` por capítulo y `assets/` compartido. `NN` tiene dos cifras
+  (tres si hay más de 99 capítulos) y sigue el orden de lectura; `00-` es el texto anterior
+  al capítulo 1, cuando es lo bastante largo para un archivo propio.
+- **M24** — Cada archivo de capítulo cumple M01–M22 por sí mismo: un único H1, igual a su
+  `title` (el título del capítulo, cuyas secciones suben un nivel); notas `[^n]` numeradas
+  1..n dentro del capítulo (una nota agrupada al final del libro va al capítulo que la
+  cita); imágenes en `assets/<hash>.<ext>`.
+- **M25** — El front matter de un capítulo añade, justo después de `title`, `book` (título
+  del libro), `chapter` (número; se omite en `00-`) y `chapters` (total). El de `index.md`
+  lleva `title` (el del libro) y `chapters`. El resto de claves, como en ADR-010.
+- **M26** — `index.md` tiene el título del libro como H1, el texto breve anterior al
+  capítulo 1 si lo hay, y una lista con un enlace a cada archivo de capítulo, en orden.
+
 ## Ejemplo de front matter
 
 ```yaml

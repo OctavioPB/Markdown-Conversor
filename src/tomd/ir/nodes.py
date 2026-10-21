@@ -204,3 +204,7 @@ class DocumentMeta:
     authors: tuple[str, ...] = ()
     license: str | None = None
     revision_id: int | None = None  # Wikipedia only
+    # A chapter of a book split by chapters (ADR-018); written right after `title`.
+    book: str | None = None  # the book's title
+    chapter: int | None = None  # 1-based; None for the index and the front part
+    chapters: int | None = None  # how many chapters the book has

@@ -237,3 +237,137 @@ def test_drop_event_reaches_the_window_once(
     assert app._on_drop(SimpleNamespace(data=data, action="copy")) == "copy"
     assert len(received) == 3  # the same dispatch: not handled a second time
     app.close()
+
+
+def test_forget_one_document_keeps_or_deletes_its_files(
+    tmp_path: Path, tk_root: Any, quiet: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tomd.ui import app as app_module
+
+    out = tmp_path / "out"
+    run_batch([TWO_PAGES, FIXED], BatchOptions(out_dir=out, ocr="never"))
+    app = _app(tk_root, out)
+    first, second = app.entries
+    answers: list[bool | None] = [None, False, True]
+    monkeypatch.setattr(app_module, "ask_forget", lambda *_a, **_k: answers.pop(0))
+
+    app.forget(first)  # cancelled: nothing changes
+    assert len(app.entries) == 2
+
+    app.open_entry(second)
+    app.forget(second)  # the list only: the file stays, the open review closes
+    assert app.review is None and [e.sha256 for e in app.entries] == [first.sha256]
+    assert (out / str(second.output)).is_file()
+    assert "siguen en la carpeta" in app.status.get()
+
+    app.forget(first)  # with its files
+    assert not app.entries and not (out / str(first.output)).exists()
+    assert app.library.empty.winfo_manager() == "grid"  # back to the first-use screen
+    app.close()
+
+
+def test_clear_library_and_not_while_converting(
+    tmp_path: Path, tk_root: Any, quiet: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tomd.ui import app as app_module
+
+    out = tmp_path / "out"
+    run_batch([TWO_PAGES, FIXED], BatchOptions(out_dir=out, ocr="never"))
+    app = _app(tk_root, out)
+    monkeypatch.setattr(app_module, "ask_forget", lambda *_a, **_k: False)
+    app.batch = object()  # a conversion in progress
+    app.clear_library()
+    assert len(app.entries) == 2 and "Espera" in quiet[-1]
+    app.batch = None
+    outputs = [out / str(e.output) for e in app.entries]
+    app.clear_library()
+    assert not app.entries
+    assert all(path.is_file() for path in outputs)  # the list only: files kept
+    app.clear_library()
+    assert "ya está vacía" in quiet[-1]
+    app.close()
+
+
+# --- Books split by chapters (ADR-018) -----------------------------------------------------
+
+
+def _book_library(tmp_path: Path) -> Path:
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).parents[1] / "writers"))
+    from test_book_rules import _pdf_book
+
+    folder = tmp_path / "in"
+    folder.mkdir()
+    _pdf_book(folder / "networks.pdf")
+    out = tmp_path / "out"
+    run_batch([folder], BatchOptions(out_dir=out, ocr="never", split="chapters"))
+    return out
+
+
+def test_a_book_is_one_row_and_its_review_moves_between_chapters(
+    tmp_path: Path, tk_root: Any, quiet: list[str]
+) -> None:
+    out = _book_library(tmp_path)
+    app = _app(tk_root, out)
+    (entry,) = app.entries
+    (item,) = app.library.tree.get_children()
+    assert app.library.tree.item(item, "values")[0] == "PDF · 3 partes"
+    tk_root.deiconify()
+    app.open_entry(entry)
+    tk_root.update()
+    view, review = app.review_view, app.review
+    assert review is not None and review.is_book and review.part == 1
+    assert "# Chapter 1 Basics" in view.raw.get("1.0", "end")
+    assert view.part_box.winfo_manager() == "pack"
+    assert view.part_box.cget("values")[0] == "Índice del libro"
+
+    view.select_part(2)  # the selector
+    assert "# Chapter 2 Routing" in view.raw.get("1.0", "end")
+    assert review.markdown_path.name == "02-chapter-2-routing.md"
+    view.show_page(6)  # turning to a page of chapter 3 shows chapter 3
+    assert review.part == 3 and view.part_box.current() == 3
+
+    # The text view: the IR read again, cut like the book on disk.
+    deadline = time.monotonic() + 60
+    while review.part_documents is None and time.monotonic() < deadline:
+        tk_root.update()
+        time.sleep(0.05)
+    assert review.part_documents is not None and len(review.part_documents) == 3
+    assert view.preview.get("1.0", "1.end") == "Chapter 3 Security"
+    app.close()
+
+
+def test_removing_a_book_deletes_its_folder(
+    tmp_path: Path, tk_root: Any, quiet: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tomd.ui import app as app_module
+
+    out = _book_library(tmp_path)
+    app = _app(tk_root, out)
+    labels: list[str] = []
+
+    def answer(*_a: object, files_label: str = "", **_k: object) -> bool:
+        labels.append(files_label)
+        return True
+
+    monkeypatch.setattr(app_module, "ask_forget", answer)
+    app.forget(app.entries[0])
+    assert "carpeta" in labels[0] and "3 archivos" in labels[0]
+    assert not (out / "networks").exists() and not app.entries
+    app.close()
+
+
+def test_the_split_option_is_remembered_and_used(tmp_path: Path, tk_root: Any) -> None:
+    from tomd.ui.app import TomdApp
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"split": "none"}))
+    app = TomdApp(tk_root, tmp_path / "out", settings)
+    assert app.split == "none"
+    app.split = "chapters"
+    app._save_settings()
+    assert json.loads(settings.read_text())["split"] == "chapters"
+    settings.write_text(json.dumps({"split": "nonsense"}))
+    assert TomdApp(tk_root, tmp_path / "out2", settings).split == "auto"
+    app.close()  # destroys the shared root: last

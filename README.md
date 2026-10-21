@@ -32,7 +32,16 @@ Para usarla:
   Abajo, la lista «Qué revisar»: al hacer clic en un punto se muestra su sitio en los dos
   lados; marca cada casilla cuando lo hayas comprobado y, al acabar, **Marcar como
   revisado** te lleva al siguiente. Se puede marcar aunque queden casillas sin marcar.
-- **Opciones:** cuándo leer páginas escaneadas (OCR) y la carpeta de resultados.
+- **Quitar documentos:** «Quitar de la biblioteca…» (o la tecla Supr) quita el documento
+  seleccionado; «Vaciar la biblioteca…», en Opciones, los quita todos. Antes se pregunta,
+  con una casilla para borrar también los archivos `.md` y sus imágenes (desmarcada: si no
+  la marcas, los archivos se quedan en la carpeta). El documento original nunca se toca.
+- **Libros por capítulos:** un libro largo con capítulos claros sale como una carpeta con
+  un archivo por capítulo. En la biblioteca es una sola fila («PDF · 12 partes»); en la
+  revisión eliges el capítulo arriba a la derecha, y al pasar de página en el original o
+  pulsar un aviso se abre el capítulo que toca.
+- **Opciones:** cuándo leer páginas escaneadas (OCR), cuándo dividir los libros por
+  capítulos y la carpeta de resultados.
 - **Los resultados** quedan en `Documentos\tomd` (hay un acceso en el menú Inicio:
   «Carpeta de resultados»). Cada documento es un archivo `.md`, más una carpeta con sus
   imágenes si las tiene.
@@ -97,6 +106,9 @@ uv run tomd convert "en:Maxwell's equations" --revision 1378299675 -o out/
 # todas (texto digital ilegible); never lo desactiva
 uv run tomd convert escaneo.pdf --ocr always -o out/
 
+# Libros por capítulos (ver «Libros divididos por capítulos»): una carpeta por libro
+uv run tomd convert libro-tecnico.pdf -o out/ --split chapters
+
 # Lote reanudable: carpetas, archivos o listas .txt de rutas (ver «Lotes»)
 uv run tomd batch biblioteca/ -o out/
 
@@ -118,15 +130,46 @@ uv run tomd batch biblioteca/ otra-carpeta/ lista.txt -o out/ --workers 1 --time
   - Tras una interrupción (Ctrl+C, un corte) se reanuda donde se quedó.
   - Una copia idéntica en otra ruta no se convierte dos veces.
 - **Aislamiento:** cada documento se convierte en un worker con límite de memoria
-  (`--memory-mb`, 4096 por defecto) y tiempo máximo (`--timeout`). Un archivo dañado, que
-  se cuelga o que agota la memoria queda registrado y el lote sigue. `--retry-failed`
-  reintenta los fallidos y `--force` reconvierte todo.
+  (`--memory-mb`, 4096 por defecto) y tiempo máximo (`--timeout`, más
+  `--timeout-per-page` segundos por página de PDF: 3 por defecto, para que un libro de 400
+  páginas con OCR tenga tiempo). Un archivo dañado, que se cuelga o que agota la memoria
+  queda registrado y el lote sigue. `--retry-failed` reintenta los fallidos y `--force`
+  reconvierte todo.
+- **Libros:** `--split` y `--split-level` funcionan igual que en `convert`. Cambiarlos no
+  reconvierte lo ya hecho: usa `--force`.
 - **Informe:** `out/report.md` resume estados, diagnósticos más frecuentes, documentos más
   lentos y fallos.
 - **Workers:** `--workers 1` por defecto, porque la máquina se comparte con el modelo
   local; súbelo cuando haya memoria libre (unos 4 GB por worker en el peor caso).
 - **Salida de la orden:** 0 si todo se convirtió, 1 si hubo fallos (ver el informe),
   130 si se interrumpió.
+
+### Libros divididos por capítulos
+
+Un libro largo puede salir como una carpeta con un `.md` por capítulo (ADR-018), más
+manejable para revisar y para el sistema de IA:
+
+```
+out/software-architect/
+  index.md                                   # título, autoría y enlaces a los capítulos
+  00-front-matter.md                         # prólogo, contenido… (si es largo)
+  01-introduction-software-architect-who-are-you.md
+  02-chapter-1-software-architect-capability-model.md
+  ...
+  assets/                                    # imágenes de todo el libro
+```
+
+- `--split auto` (por defecto) divide los libros PDF o EPUB de unas 80 páginas o más
+  (≈ 150 000 caracteres) cuando encuentra capítulos fiables; `--split chapters` lo intenta
+  con cualquier tamaño; `--split none` deja siempre un solo archivo. Wikipedia nunca se
+  divide.
+- Los capítulos salen de los marcadores del PDF o del índice del EPUB; si no hay, de los
+  títulos con forma de capítulo («Capítulo 3», «Chapter III», «4 Redes»). Las partes
+  («Part II») abren su primer capítulo. `--split-level 2` divide por secciones.
+- Cada capítulo es un documento completo: su título es el H1, sus notas se numeran desde
+  1 y su front matter añade `book`, `chapter` y `chapters` (reglas M23–M26).
+- Si no hay capítulos fiables no divide y lo dice (`doc.split_skipped`): mejor un archivo
+  entero que capítulos mal cortados.
 
 ### Interfaz de escritorio
 

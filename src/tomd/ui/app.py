@@ -15,11 +15,12 @@ import sys
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font, messagebox, ttk
 from typing import Any
 
 from tomd import __version__
 from tomd.pipeline.batch import MANIFEST_NAME
+from tomd.pipeline.dispatch import remove_output
 from tomd.pipeline.manifest import Finding, LibraryEntry, Manifest
 from tomd.readers.pdf.reader import DEFAULT_BACKEND
 from tomd.ui import theme
@@ -42,6 +43,12 @@ _OCR_CHOICES = (
     ("always", "Siempre", "Lee todas las páginas como imagen. Más lento; para PDF con "
      "texto dañado."),
     ("never", "Nunca", "Más rápido; las páginas escaneadas quedan vacías."),
+)  # fmt: skip
+_SPLIT_CHOICES = (
+    ("auto", "Libros largos", "Un libro de unas 80 páginas o más, con capítulos claros, "
+     "sale como una carpeta con un archivo por capítulo. Recomendado."),
+    ("chapters", "Siempre que se pueda", "También los documentos cortos con capítulos."),
+    ("none", "Nunca", "Cada documento es siempre un solo archivo."),
 )  # fmt: skip
 
 
@@ -75,6 +82,8 @@ class TomdApp:
         saved = settings.get("out_dir")
         self.out_dir = out_dir or (Path(saved) if isinstance(saved, str) else default_out_dir())
         self.ocr = str(settings.get("ocr") or "auto")
+        split = str(settings.get("split") or "auto")
+        self.split = split if split in {value for value, _, _ in _SPLIT_CHOICES} else "auto"
         backend = str(settings.get("backend") or DEFAULT_BACKEND)
         self.backend = backend if backend in available_backends() else DEFAULT_BACKEND
         self.version = __version__
@@ -113,6 +122,7 @@ class TomdApp:
         library_actions.review_pending = self.review_pending
         library_actions.show_in_folder = self.show_in_folder
         library_actions.retry = self.retry
+        library_actions.forget = self.forget
         library_actions.stop = self.stop
         self.library = LibraryView(self.content, self.fonts, library_actions)
         self.library.grid(row=0, column=0, sticky="nsew")
@@ -277,7 +287,8 @@ class TomdApp:
             "reinician.",
         ):
             return
-        options = BatchOptionsUI(str(self.out_dir), ocr="always", backend=self.backend, force=True)
+        options = BatchOptionsUI(str(self.out_dir), ocr="always", backend=self.backend,
+                                 force=True, split=self.split)  # fmt: skip
         self.start_batch([review.entry.source], options, open_after=True)
 
     # --- Adding documents ------------------------------------------------------------
@@ -317,13 +328,88 @@ class TomdApp:
                 return
             sources = usable
         single = len(sources) == 1 and (articles or Path(sources[0]).is_file())
-        options = BatchOptionsUI(str(self.out_dir), ocr=self.ocr, backend=self.backend)
+        options = BatchOptionsUI(str(self.out_dir), ocr=self.ocr, backend=self.backend,
+                                 split=self.split)  # fmt: skip
         self.start_batch(sources, options, open_after=single)
 
     def retry(self, entry: LibraryEntry) -> None:
         options = BatchOptionsUI(str(self.out_dir), ocr=self.ocr, backend=self.backend,
-                                 retry_failed=True)  # fmt: skip
+                                 retry_failed=True, split=self.split)  # fmt: skip
         self.start_batch([entry.source], options, open_after=False)
+
+    # --- Removing documents ----------------------------------------------------------
+
+    def forget(self, entry: LibraryEntry) -> None:
+        """Remove one document from the library, and its files if the person asks."""
+        if entry.state == "converting" or self.batch is not None:
+            messagebox.showinfo(
+                "tomd", "Espera a que termine la conversión en curso para quitar documentos "
+                "de la biblioteca.",
+            )  # fmt: skip
+            return
+        title = entry.title or Path(entry.source).stem
+        files = (f"Borrar también su carpeta, con sus {entry.parts - 1} archivos e imágenes"
+                 if entry.parts else "Borrar también su archivo .md y sus imágenes")  # fmt: skip
+        answer = ask_forget(
+            self.root, "Quitar de la biblioteca",
+            f"«{title}» dejará de aparecer en la biblioteca, con su estado y lo que hayas "
+            "marcado al revisarlo. El documento original no se toca; si lo añades de "
+            "nuevo, se convierte otra vez.",
+            files_label=files,
+        )  # fmt: skip
+        if answer is not None:
+            self._forget([entry], delete_files=answer)
+
+    def clear_library(self) -> None:
+        """Empty the library of the current results folder."""
+        if self.batch is not None:
+            messagebox.showinfo(
+                "tomd", "Espera a que termine la conversión en curso para vaciar la biblioteca."
+            )
+            return
+        if not self.entries:
+            messagebox.showinfo("tomd", "La biblioteca ya está vacía.")
+            return
+        answer = ask_forget(
+            self.root, "Vaciar la biblioteca",
+            f"Los {len(self.entries)} documentos dejarán de aparecer en la biblioteca, con su "
+            "estado y lo que hayas marcado al revisarlos. Los documentos originales no se "
+            "tocan.",
+            files_label=f"Borrar también sus archivos .md e imágenes de {self.out_dir}",
+        )  # fmt: skip
+        if answer is not None:
+            self._forget(list(self.entries), delete_files=answer, everything=True)
+
+    def _forget(
+        self, entries: list[LibraryEntry], *, delete_files: bool, everything: bool = False
+    ) -> None:
+        if self.review is not None and self.review.entry.sha256 in {e.sha256 for e in entries}:
+            self.show_library()
+        self.review_view.close()  # releases the original PDF, if one was open
+        failed = 0
+        if delete_files:
+            for entry in entries:
+                try:
+                    remove_output(self.out_dir, entry.output, entry.source)
+                except OSError:  # open in another program, or no permission
+                    failed += 1
+        if everything:
+            self.manifest.forget_all()
+        else:
+            self.manifest.forget(e.sha256 for e in entries)
+        self.refresh()
+        what = "1 documento" if len(entries) == 1 else f"{len(entries)} documentos"
+        if delete_files:
+            self.status.set(f"Se quitó {what} de la biblioteca y se borraron sus archivos.")
+        else:
+            self.status.set(
+                f"Se quitó {what} de la biblioteca; sus archivos .md siguen en la carpeta."
+            )
+        if failed:
+            messagebox.showwarning(
+                "tomd", f"No se pudieron borrar los archivos de {failed} documento(s): puede "
+                "que estén abiertos en otro programa. Ya no están en la biblioteca.",
+            )  # fmt: skip
 
     # --- Batches ---------------------------------------------------------------------
 
@@ -446,12 +532,17 @@ class TomdApp:
     # --- Options and folders ---------------------------------------------------------
 
     def show_options(self) -> None:
-        dialog = OptionsDialog(self.root, self.fonts, self.ocr, self.backend, self.out_dir)
+        dialog = OptionsDialog(
+            self.root, self.fonts, self.ocr, self.backend, self.out_dir, self.split
+        )
         self.root.wait_window(dialog)
+        if dialog.clear_requested:
+            self.clear_library()
+            return
         if dialog.result is None:
             return
-        ocr, backend, out_dir = dialog.result
-        self.ocr, self.backend = ocr, backend
+        ocr, backend, out_dir, split = dialog.result
+        self.ocr, self.backend, self.split = ocr, backend, split
         if out_dir != self.out_dir:
             if self.batch is not None:
                 messagebox.showinfo(
@@ -491,7 +582,10 @@ class TomdApp:
     def _save_settings(self) -> None:
         if self.settings_path is None:
             return
-        data = {"out_dir": str(self.out_dir), "ocr": self.ocr, "backend": self.backend}
+        data = {
+            "out_dir": str(self.out_dir), "ocr": self.ocr, "backend": self.backend,
+            "split": self.split,
+        }  # fmt: skip
         with contextlib.suppress(OSError):
             self.settings_path.parent.mkdir(parents=True, exist_ok=True)
             self.settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -513,16 +607,18 @@ class OptionsDialog(tk.Toplevel):
     """OCR, the results folder and, under «Avanzado», the PDF engine."""
 
     def __init__(self, parent: tk.Misc, fonts: theme.Fonts, ocr: str, backend: str,
-                 out_dir: Path) -> None:  # fmt: skip
+                 out_dir: Path, split: str = "auto") -> None:  # fmt: skip
         super().__init__(parent)
         self.title("Opciones")
         self.configure(background=PALETTE.surface)
         self.transient(parent.winfo_toplevel())
         self.resizable(False, False)
-        self.result: tuple[str, str, Path] | None = None
+        self.result: tuple[str, str, Path, str] | None = None
+        self.clear_requested = False
         self.ocr = tk.StringVar(value=ocr)
         self.backend = tk.StringVar(value=backend)
         self.out_dir = tk.StringVar(value=str(out_dir))
+        self.split = tk.StringVar(value=split)
         body = ttk.Frame(self, style="Surface.TFrame", padding=24)
         body.pack(fill="both", expand=True)
         ttk.Label(body, text="Opciones", style="Surface.Title.TLabel").pack(anchor="w")
@@ -536,6 +632,18 @@ class OptionsDialog(tk.Toplevel):
                 anchor="w", padx=(26, 0), pady=(0, 6)
             )
 
+        ttk.Label(body, text="Dividir libros por capítulos", style="Surface.Strong.TLabel").pack(
+            anchor="w", pady=(14, 6)
+        )
+        for value, label, help_text in _SPLIT_CHOICES:
+            ttk.Radiobutton(body, text=label, value=value, variable=self.split).pack(anchor="w")
+            ttk.Label(
+                body, text=help_text, style="Surface.Muted.TLabel",
+                wraplength=_text_width(62), justify="left",
+            ).pack(anchor="w", padx=(26, 0), pady=(0, 6))  # fmt: skip
+        ttk.Label(body, text="Afecta a lo que conviertas a partir de ahora.",
+                  style="Surface.Muted.TLabel").pack(anchor="w")  # fmt: skip
+
         ttk.Label(body, text="Carpeta de resultados", style="Surface.Strong.TLabel").pack(
             anchor="w", pady=(14, 6)
         )
@@ -545,6 +653,17 @@ class OptionsDialog(tk.Toplevel):
         ttk.Button(row, text="Cambiar…", command=self._choose).pack(side="right", padx=(12, 0))
         ttk.Label(body, text="Cada carpeta tiene su propia biblioteca.",
                   style="Surface.Muted.TLabel").pack(anchor="w", pady=(4, 0))  # fmt: skip
+
+        ttk.Label(body, text="Biblioteca", style="Surface.Strong.TLabel").pack(
+            anchor="w", pady=(14, 6)
+        )
+        row = ttk.Frame(body, style="Surface.TFrame")
+        row.pack(fill="x")
+        ttk.Label(row, text="Quita todos los documentos de la lista de esta carpeta.",
+                  style="Surface.Muted.TLabel").pack(side="left")  # fmt: skip
+        ttk.Button(row, text="Vaciar la biblioteca…", command=self._clear).pack(
+            side="right", padx=(12, 0)
+        )
 
         backends = available_backends()
         if len(backends) > 1:
@@ -571,8 +690,56 @@ class OptionsDialog(tk.Toplevel):
             self.out_dir.set(folder)
 
     def _save(self) -> None:
-        self.result = (self.ocr.get(), self.backend.get(), Path(self.out_dir.get()))
+        self.result = (
+            self.ocr.get(), self.backend.get(), Path(self.out_dir.get()), self.split.get()
+        )  # fmt: skip
         self.destroy()
+
+    def _clear(self) -> None:
+        self.clear_requested = True  # the app asks for confirmation once this closes
+        self.destroy()
+
+
+def ask_forget(
+    parent: tk.Misc,
+    title: str,
+    text: str,
+    *,
+    files_label: str = "Borrar también su archivo .md y sus imágenes",
+) -> bool | None:
+    """Confirm a removal from the library. None when cancelled; otherwise whether the
+    files go too (unchecked by default: the list is cleaned, the disk is not)."""
+    dialog = tk.Toplevel(parent)
+    dialog.title(title)
+    dialog.configure(background=PALETTE.surface)
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+    files = tk.BooleanVar(value=False)
+    result: list[bool] = []
+    body = ttk.Frame(dialog, style="Surface.TFrame", padding=24)
+    body.pack(fill="both", expand=True)
+    ttk.Label(body, text=title, style="Surface.Title.TLabel").pack(anchor="w")
+    ttk.Label(
+        body, text=text, style="Surface.TLabel", wraplength=_text_width(60), justify="left"
+    ).pack(anchor="w", pady=(8, 14))
+    ttk.Checkbutton(body, text=files_label, variable=files).pack(anchor="w")
+    ttk.Label(body, text="Los archivos borrados no van a la papelera.",
+              style="Surface.Muted.TLabel").pack(anchor="w", padx=(26, 0))  # fmt: skip
+
+    def accept() -> None:
+        result.append(files.get())
+        dialog.destroy()
+
+    buttons = ttk.Frame(body, style="Surface.TFrame")
+    buttons.pack(fill="x", pady=(20, 0))
+    ttk.Button(buttons, text="Quitar", style="Primary.TButton", command=accept).pack(side="right")
+    cancel = ttk.Button(buttons, text="Cancelar", command=dialog.destroy)
+    cancel.pack(side="right", padx=8)
+    dialog.bind("<Escape>", lambda _e: dialog.destroy())
+    cancel.focus_set()  # on a destructive dialog, the default is to cancel
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result[0] if result else None
 
 
 def ask_article(parent: tk.Misc, fonts: theme.Fonts) -> str | None:
@@ -707,3 +874,9 @@ def run(source: str | None = None, out_dir: Path | None = None) -> int:
         root.after(200, lambda: app.add([source], articles=not is_path))
     root.mainloop()
     return 0
+
+
+def _text_width(chars: int) -> int:
+    """Pixels for `chars` characters of the UI font: wrap widths that follow the display
+    scale (a fixed pixel width wraps too early at 150 %)."""
+    return chars * font.nametofont("TkDefaultFont").measure("0")

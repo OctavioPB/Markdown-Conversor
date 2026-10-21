@@ -93,6 +93,44 @@ def write_output(out_dir: Path, slug: str, text: str, assets: tuple[Asset, ...])
     return target
 
 
+def remove_output(out_dir: Path, output: str | None, source: str) -> list[Path]:
+    """Delete what a conversion wrote: `<slug>.md`, `<slug>.assets/` and, for a Wikipedia
+    article, the HTML downloaded into the output folder. Only paths inside `out_dir` are
+    touched (never the user's original). Returns what was deleted."""
+    import shutil
+
+    from tomd.pipeline.book import INDEX_NAME
+    from tomd.pipeline.fetch import CACHE_DIR
+
+    root = out_dir.resolve()
+    candidates: list[Path] = []
+    folder = Path(output).parent if output else Path()
+    if output and folder != Path():
+        # A book split by chapters (ADR-018): its whole folder, but only a folder of the
+        # output directory that holds the book's index (never a folder of the user's).
+        book = (out_dir / folder.parts[0]).resolve()
+        if book.parent == root and (book / INDEX_NAME).is_file():
+            candidates.append(book)
+    elif output:
+        markdown = out_dir / Path(output).name
+        candidates += [markdown, markdown.with_suffix(".assets")]
+    if source:
+        downloaded = Path(source)
+        if downloaded.resolve().parent == root / CACHE_DIR:
+            candidates.append(downloaded)
+    removed: list[Path] = []
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved.parent not in (root, root / CACHE_DIR) or not resolved.exists():
+            continue
+        if resolved.is_dir():
+            shutil.rmtree(resolved)
+        else:
+            resolved.unlink()
+        removed.append(resolved)
+    return removed
+
+
 def convert(
     source: str,
     out_dir: Path,
@@ -100,9 +138,21 @@ def convert(
     revision: int | None = None,
     pdf_backend: str = DEFAULT_BACKEND,
     ocr: OcrMode = OcrMode.AUTO,
+    split: str = "auto",
+    split_level: int = 1,
 ) -> ConversionResult:
+    """Convert one source. A book may be split by chapters (ADR-018): then the result is
+    the book's folder and `markdown_path` its `index.md`."""
+    from tomd.pipeline.book import render_book, write_book
+    from tomd.transforms.split import split_document
+
     doc = read_source(source, revision=revision, pdf_backend=pdf_backend, ocr=ocr)
-    slug, result, doc = render_document(doc)
+    slug, doc = prepare_document(doc)
+    book, doc = split_document(doc, mode=split, level=split_level)
+    if book is not None:
+        rendered = render_book(book)
+        return ConversionResult(write_book(out_dir, slug, rendered), rendered.diagnostics, doc)
+    result = render_markdown(doc, slug=slug)
     target = write_output(out_dir, slug, result.text, doc.assets)
     return ConversionResult(target, result.diagnostics, doc)
 

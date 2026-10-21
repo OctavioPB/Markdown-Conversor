@@ -15,7 +15,7 @@ from PIL import ImageTk
 from tomd.ir import Document
 from tomd.pipeline.manifest import Finding
 from tomd.ui.job import Failed, PreviewJob
-from tomd.ui.session import Review, preview_runs
+from tomd.ui.session import Review, preview_runs, split_like
 from tomd.ui.texts import review_hint, review_title
 from tomd.ui.theme import PALETTE, STATES, Fonts
 
@@ -116,7 +116,7 @@ class ReviewView(ttk.Frame):
         ttk.Button(self.nav, text="▶", width=3, command=lambda: self.show_page(self.page + 1)).pack(
             side="right", padx=(2, 14)
         )
-        ttk.Label(self.nav, textvariable=self.page_label, style="Surface.Muted.TLabel", width=11,
+        ttk.Label(self.nav, textvariable=self.page_label, style="Surface.Muted.TLabel", width=16,
                   anchor="center").pack(side="right")  # fmt: skip
         ttk.Button(self.nav, text="◀", width=3, command=lambda: self.show_page(self.page - 1)).pack(
             side="right", padx=2
@@ -148,6 +148,10 @@ class ReviewView(ttk.Frame):
         bar = self._pane_header(card, "Resultado")
         toggle = ttk.Frame(bar, style="Surface.TFrame")
         toggle.pack(side="right")
+        self.part_choice = tk.StringVar()
+        self.part_box = ttk.Combobox(bar, textvariable=self.part_choice, state="readonly",
+                                     width=34, font=self.fonts(10))  # fmt: skip
+        self.part_box.bind("<<ComboboxSelected>>", lambda _e: self._part_chosen())
         self.mode_buttons = {
             mode: ttk.Button(
                 toggle, text=label, style="Filter.TButton", command=self._mode_command(mode)
@@ -261,11 +265,13 @@ class ReviewView(ttk.Frame):
         self.ocr_button.state(["!disabled"] if review.is_pdf else ["disabled"])
         self.md_button.state(["!disabled"] if review.markdown else ["disabled"])
         self._load_original(review)
+        self._show_parts(review)
         self._fill_raw(review.markdown)
         self._fill_preview(review)
         self._fill_checklist(review)
         self.page = 1
-        self.show_page(1)
+        first = min((a.page for a in review.anchors), default=1)
+        self.show_page(first if review.is_book else 1)
         if review.document is None and Path(review.entry.source).is_file():
             backend, ocr = self.actions.preview_options()
             self._preview = PreviewJob(review.entry.source, backend, ocr)
@@ -296,6 +302,8 @@ class ReviewView(ttk.Frame):
         self._preview = None
         if isinstance(outcome, Document):
             self.review.document = outcome
+            if self.review.is_book:
+                self.review.part_documents = split_like(outcome, self.review.parts)
             self._fill_preview(self.review)
             if self.pdf is None:
                 self._show_info(self.review)
@@ -398,16 +406,23 @@ class ReviewView(ttk.Frame):
         p = self.preview
         p.delete("1.0", "end")
         self._preview_images.clear()
-        if review.document is None:
-            text = (
-                "Preparando la vista de texto…"
-                if Path(review.entry.source).is_file()
-                else "No se encuentra el original, así que solo está la vista Markdown."
-            )
+        document = review.part_document()
+        if document is None:
+            if not Path(review.entry.source).is_file():
+                text = "No se encuentra el original, así que solo está la vista Markdown."
+            elif review.document is None:
+                text = "Preparando la vista de texto…"
+            elif review.part == 0:
+                text = "Este es el índice del libro: elige un capítulo arriba a la derecha."
+            else:
+                text = (
+                    "La vista de texto no coincide con los capítulos guardados (el libro se "
+                    "convirtió con otras opciones). La vista Markdown muestra el archivo."
+                )
             p.insert("end", text, ("caption",))
             return
-        assets = {a.sha256: a for a in review.document.assets}
-        for run in preview_runs(review.document):
+        assets = {a.sha256: a for a in document.assets}
+        for run in preview_runs(document):
             if run.image is not None:
                 self._insert_image(assets.get(run.image), run.tags)
             elif run.text:
@@ -505,6 +520,7 @@ class ReviewView(ttk.Frame):
         """Show where a finding is: its block on the page, and its text on the right."""
         if finding.page is None or self.review is None:
             return
+        self._follow_part(finding.page)
         if self.pdf is not None:
             self._point_at(finding.page, finding.bbox)
         line = self.review.line_for_page(finding.page)
@@ -599,10 +615,47 @@ class ReviewView(ttk.Frame):
         self.page_label.set(f"pág. {self.page} de {len(self.pdf)}")
         self._render_page()
         if follow and self.review is not None:
+            self._follow_part(self.page)
             line = self.review.line_for_page(self.page)
             if line is not None:
                 self._mark_line(line)
             self._mark_preview_page(self.page)
+
+    # --- Chapters of a book ------------------------------------------------------------
+
+    def _show_parts(self, review: Review) -> None:
+        if not review.is_book:
+            self.part_box.pack_forget()
+            return
+        self.part_box.configure(values=[review.part_label(i) for i in range(len(review.parts))])
+        self.part_box.current(review.part)
+        self.part_box.pack(side="right", padx=(0, 12))
+
+    def _part_chosen(self) -> None:
+        if self.review is not None:
+            self.select_part(self.part_box.current())
+
+    def select_part(self, part: int) -> None:
+        """Show another file of the book; the original follows to its first page."""
+        review = self.review
+        if review is None or not review.is_book or part == review.part or part < 0:
+            return
+        review.show_part(part)
+        self.part_box.current(part)
+        self.md_button.state(["!disabled"] if review.markdown else ["disabled"])
+        self._fill_raw(review.markdown)
+        self._fill_preview(review)
+        pages = [a.page for a in review.anchors]
+        if pages and self.pdf is not None and not min(pages) <= self.page <= max(pages):
+            self.show_page(min(pages), follow=False)
+
+    def _follow_part(self, page: int) -> None:
+        """Turning to a page of another chapter shows that chapter's file."""
+        if self.review is None or not self.review.is_book:
+            return
+        part = self.review.part_for_page(page)
+        if part is not None and part != self.review.part:
+            self.select_part(part)
 
     def zoom(self, step: int) -> None:
         self.zoom_index = max(0, min(len(_ZOOMS) - 1, self.zoom_index + step))

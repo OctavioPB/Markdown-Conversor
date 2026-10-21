@@ -33,6 +33,7 @@ Los textos de cada código están en inglés, como los mensajes del programa.
 | `pdf.reading_order_uncertain` | warning | The column layout of a page is ambiguous; paragraphs may be out of order. | Check the paragraph order of that page against the source. |
 | `pdf.table_not_reconstructed` | warning | Something on the page looks like a table (a table caption, or rows aligned in columns) but it was not rebuilt with confidence; its content stays as paragraphs and the row and column structure is lost. | Compare that page with the source. If the table matters, convert with `--backend docling` or copy it by hand. |
 | `text.invalid_unicode` | warning | The source contains invalid characters (broken UTF-8, lone surrogates); each was replaced by U+FFFD. | The source file is damaged: obtain a fresh copy (fetch the article again). |
+| `doc.split_skipped` | info | The book was not split by chapters: no reliable chapter boundaries were found (no usable bookmarks or table of contents, and no recognisable chapter headings). The whole book is one file; nothing is lost. | — |
 | `epub.boilerplate_dropped` | info | Distributor boilerplate (e.g. the Project Gutenberg header and license) was removed. | — |
 | `epub.cover_skipped` | info | The cover page (only the cover image) was left out of the text. | — |
 | `epub.heading_inferred` | info | Headings were inferred from the table of contents or from CSS class names, because the book does not mark them with <h1>-<h6>. | — |

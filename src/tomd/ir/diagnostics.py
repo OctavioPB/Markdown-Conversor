@@ -21,6 +21,7 @@ Severity = Literal["info", "warning", "error"]
 # --- Codes (ADR-006, ADR-011) ----------------------------------------------------------------
 # Document and text
 DOC_TITLE_MISSING = "doc.title_missing"
+DOC_SPLIT_SKIPPED = "doc.split_skipped"
 TEXT_INVALID_UNICODE = "text.invalid_unicode"
 HEADING_LEVEL_CLAMPED = "heading.level_clamped"
 # Tables, math, images, footnotes
@@ -88,6 +89,13 @@ CATALOG: dict[str, CodeInfo] = {
         "file is named after the source file.",
         "Set a title in the source (PDF document properties) or check that the first "
         "heading was recognised.",
+    ),
+    DOC_SPLIT_SKIPPED: CodeInfo(
+        "info",
+        "The book was not split by chapters: no reliable chapter boundaries were found (no "
+        "usable bookmarks or table of contents, and no recognisable chapter headings). The "
+        "whole book is one file; nothing is lost.",
+        "",
     ),
     TEXT_INVALID_UNICODE: CodeInfo(
         "warning",

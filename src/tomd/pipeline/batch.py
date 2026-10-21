@@ -46,6 +46,11 @@ class BatchOptions:
     ocr: str = "auto"
     retry_failed: bool = False
     force: bool = False
+    # Long books need longer: the worker reports a PDF's pages and gets this much more
+    # time per page (OCR runs at ~1-3 s a page; a 431-page book then has ~30 min).
+    timeout_per_page_s: float = 3.0
+    split: str = "auto"  # books by chapters (ADR-018)
+    split_level: int = 1
 
 
 @dataclass
@@ -115,14 +120,18 @@ def hash_inputs(files: list[Path], manifest: Manifest) -> list[tuple[str, str]]:
 # --- Worker side -----------------------------------------------------------------------------
 
 
-def _worker_main(conn: Connection, memory_mb: int, backend: str, ocr: str) -> None:
+def _worker_main(
+    conn: Connection, memory_mb: int, backend: str, ocr: str, split: str, split_level: int
+) -> None:
     """Convert documents sent by the parent until told to stop."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl+C is the parent's to handle
     from tomd.errors import DrmProtectedError, TomdError
     from tomd.pipeline.anchors import page_anchors
+    from tomd.pipeline.book import render_book
     from tomd.pipeline.dispatch import prepare_document, read_source
     from tomd.pipeline.limits import apply_memory_limit, peak_memory_mb
     from tomd.readers.pdf.ocr import OcrMode
+    from tomd.transforms.split import split_document
     from tomd.writers.markdown import render_markdown
 
     if memory_mb > 0:
@@ -136,21 +145,33 @@ def _worker_main(conn: Connection, memory_mb: int, backend: str, ocr: str) -> No
             return
         _, source = message
         try:
+            pages = _page_count(source)
+            if pages:
+                conn.send(("pages", pages))  # the parent extends this document's deadline
             doc = read_source(source, pdf_backend=backend, ocr=OcrMode(ocr))
             slug, doc = prepare_document(doc)
+            book, doc = split_document(doc, mode=split, level=split_level)
             conn.send(("slug", slug))
             final = conn.recv()[1]
+            if book is not None:
+                rendered = render_book(book)
+                part_anchors = [
+                    (part, a.page, a.line, a.bbox)
+                    for part, chapter in enumerate(book.chapters, start=1)
+                    for a in page_anchors(chapter.document, rendered.files[part][1])
+                ]
+                parts = [(name, _part_title(name, book, i)) for i, (name, _) in
+                         enumerate(rendered.files)]  # fmt: skip
+                conn.send(
+                    ("book", rendered, _wire(rendered.diagnostics), part_anchors, parts,
+                     doc.meta.title, peak_memory_mb())
+                )  # fmt: skip
+                continue
             result = render_markdown(doc, slug=final)
-            diagnostics = [
-                (d.code, d.severity, d.message,
-                 d.provenance.page if d.provenance else None,
-                 d.provenance.bbox if d.provenance else None)
-                for d in result.diagnostics
-            ]  # fmt: skip
             anchors = [(a.page, a.line, a.bbox) for a in page_anchors(doc, result.text)]
             conn.send(
-                ("done", result.text, doc.assets, diagnostics, anchors, doc.meta.title,
-                 peak_memory_mb())
+                ("done", result.text, doc.assets, _wire(result.diagnostics), anchors,
+                 doc.meta.title, peak_memory_mb())
             )  # fmt: skip
         except MemoryError:
             conn.send(("error", "memory", "Memory limit exceeded.", peak_memory_mb()))
@@ -162,6 +183,42 @@ def _worker_main(conn: Connection, memory_mb: int, backend: str, ocr: str) -> No
         except Exception as exc:  # a bug in tomd: recorded, never fatal to the batch
             detail = "".join(traceback.format_exception(exc))[-2000:]
             conn.send(("error", "failed", f"Internal error: {detail}", peak_memory_mb()))
+
+
+def _wire(diagnostics: Any) -> list[tuple[Any, ...]]:
+    """Diagnostics as plain tuples for the pipe: (code, severity, message, page, bbox)."""
+    return [
+        (d.code, d.severity, d.message,
+         d.provenance.page if d.provenance else None,
+         d.provenance.bbox if d.provenance else None)
+        for d in diagnostics
+    ]  # fmt: skip
+
+
+def _part_title(name: str, book: Any, index: int) -> str | None:
+    """Title of file `index` of a rendered book: the book's for index.md, else the chapter's."""
+    if index == 0:
+        title: str | None = book.book.meta.title
+        return title
+    chapter_title: str | None = book.chapters[index - 1].document.meta.title
+    return chapter_title
+
+
+def _page_count(source: str) -> int:
+    """Pages of a PDF, read in the worker (a damaged file may crash PDFium, and only the
+    worker may crash); 0 for other sources or when the file cannot be opened."""
+    if not source.lower().endswith(".pdf"):
+        return 0
+    try:
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(source)
+        try:
+            return len(pdf)
+        finally:
+            pdf.close()
+    except Exception:  # read_source reports the real problem
+        return 0
 
 
 @dataclass
@@ -187,7 +244,9 @@ class _Pool:
         parent, child = self.context.Pipe()
         o = self.options
         process = self.context.Process(
-            target=_worker_main, args=(child, o.memory_mb, o.backend, o.ocr), daemon=True
+            target=_worker_main,
+            args=(child, o.memory_mb, o.backend, o.ocr, o.split, o.split_level),
+            daemon=True,
         )
         process.start()
         child.close()
@@ -290,10 +349,11 @@ def _schedule(
                 if worker.conn in ready:
                     outcome = _receive(worker, task, manifest, version, options, write_output)
                 elif time.monotonic() >= worker.deadline:
-                    outcome = ("timeout", f"No result after {options.timeout_s:.0f} s.")
+                    allowed = worker.deadline - worker.started
+                    outcome = ("timeout", f"No result after {allowed:.0f} s.")
                     pool.stop(worker, kill=True)
                     manifest.finished(task, version, status="timeout",
-                                      duration_s=options.timeout_s, peak_mb=None,
+                                      duration_s=allowed, peak_mb=None,
                                       error=outcome[1])  # fmt: skip
                 else:
                     continue
@@ -343,9 +403,28 @@ def _receive(
                           error=error)  # fmt: skip
         return status, error
     kind = message[0]
+    if kind == "pages":
+        worker.deadline = (
+            worker.started + options.timeout_s + message[1] * options.timeout_per_page_s
+        )
+        return None
     if kind == "slug":
         worker.conn.send(("slug", manifest.claim_slug(message[1], task.sha256)))
         return None
+    if kind == "book":
+        from tomd.pipeline.book import INDEX_NAME, write_book
+
+        _, rendered, diagnostics, part_anchors, parts, title, peak = message
+        slug = manifest.claim_slug("", task.sha256)  # already claimed: returns the record
+        write_book(options.out_dir, slug, rendered)
+        counts = Counter((code, severity) for code, severity, *_ in diagnostics)
+        findings = [Finding(c, s, m, p, b) for c, s, m, p, b in diagnostics]
+        manifest.finished(task, version, status="done", duration_s=elapsed, peak_mb=peak,
+                          output=f"{slug}/{INDEX_NAME}", title=title, diagnostics=dict(counts),
+                          findings=findings, parts=parts, part_anchors=part_anchors)  # fmt: skip
+        warnings = sum(n for (_, sev), n in counts.items() if sev != "info")
+        note = f"split into {len(parts)} files" + (f", {warnings} warning(s)" if warnings else "")
+        return "done", note
     if kind == "done":
         _, text, assets, diagnostics, anchors, title, peak = message
         slug = manifest.claim_slug("", task.sha256)  # already claimed: returns the record
@@ -377,6 +456,8 @@ def _options_record(options: BatchOptions) -> dict[str, object]:
         "workers": options.workers, "timeout_s": options.timeout_s,
         "memory_mb": options.memory_mb, "backend": options.backend, "ocr": options.ocr,
         "retry_failed": options.retry_failed, "force": options.force,
+        "timeout_per_page_s": options.timeout_per_page_s, "split": options.split,
+        "split_level": options.split_level,
         "version": __version__, "pid": os.getpid(),
     }  # fmt: skip
 

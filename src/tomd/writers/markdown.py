@@ -49,9 +49,11 @@ class RenderResult:
     diagnostics: tuple[Diagnostic, ...]  # the document's plus those emitted while writing
 
 
-def render_markdown(doc: Document, *, slug: str) -> RenderResult:
-    """Serialize `doc`. `slug` names the asset folder: `<slug>.assets/<hash>.<ext>`."""
-    return _Writer(doc, slug).render()
+def render_markdown(doc: Document, *, slug: str, assets_dir: str | None = None) -> RenderResult:
+    """Serialize `doc`. Images link to `<assets_dir>/<hash>.<ext>`; by default the asset
+    folder is named after the document, `<slug>.assets` (a chapter of a split book uses
+    the book's shared `assets`, ADR-018)."""
+    return _Writer(doc, assets_dir or f"{slug}.assets").render()
 
 
 def asset_filename(asset: Asset) -> str:
@@ -126,6 +128,12 @@ def _front_matter(meta: DocumentMeta, diagnostics_count: int) -> str:
     lines = ["---"]
     if meta.title:
         lines.append(f"title: {_yaml_quoted(meta.title)}")
+    if meta.book:
+        lines.append(f"book: {_yaml_quoted(meta.book)}")
+    if meta.chapter is not None:
+        lines.append(f"chapter: {meta.chapter}")
+    if meta.chapters is not None:
+        lines.append(f"chapters: {meta.chapters}")
     lines.append(f"source_type: {_yaml_symbol(meta.source_type)}")
     lines.append(f"source: {_yaml_quoted(meta.source)}")
     if meta.source_sha256:
@@ -543,9 +551,9 @@ def _needs_separator(prev: Block, block: Block) -> bool:
 
 
 class _Writer:
-    def __init__(self, doc: Document, slug: str) -> None:
+    def __init__(self, doc: Document, assets_dir: str) -> None:
         self.doc = doc
-        self.slug = slug
+        self.assets_dir = assets_dir
         self.assets = {a.sha256: a for a in doc.assets}
         self.diagnostics: list[Diagnostic] = []
 
@@ -681,7 +689,7 @@ class _Writer:
             )
             return caption
         alt = _escape_text(_collapse(image.alt).strip(), table=False, prev="[", nxt="]")
-        dest = _link_destination(f"{self.slug}.assets/{asset_filename(asset)}", table=False)
+        dest = _link_destination(f"{self.assets_dir}/{asset_filename(asset)}", table=False)
         return "\n\n".join(p for p in (f"![{alt}]({dest})", caption) if p)
 
     def table(self, table: Table) -> str:
@@ -802,7 +810,7 @@ class _HtmlRenderer:
                 asset = self.writer.assets.get(src_asset)
                 if asset is None:
                     return ""
-                src = _html_attr(f"{self.writer.slug}.assets/{asset_filename(asset)}")
+                src = _html_attr(f"{self.writer.assets_dir}/{asset_filename(asset)}")
                 return f'<img src="{src}" alt="{_html_attr(_collapse(alt))}">'
             case ThematicBreak():
                 return "<hr>"

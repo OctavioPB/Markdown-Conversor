@@ -31,6 +31,7 @@ class LibraryActions:
     review_pending: Callable[[], None]
     show_in_folder: Callable[[LibraryEntry], None]
     retry: Callable[[LibraryEntry], None]
+    forget: Callable[[LibraryEntry], None]
     stop: Callable[[], None]
 
 
@@ -132,7 +133,7 @@ class LibraryView(ttk.Frame):
         self.tree.heading("#0", text="Documento", anchor="w")
         self.tree.column("#0", width=char * 60, minwidth=char * 16, stretch=True)
         columns_spec: tuple[tuple[str, str, int, bool], ...] = (
-            ("kind", "Tipo", 10, False),
+            ("kind", "Tipo", 15, False),  # "PDF · 12 partes"
             ("state", "Estado", 15, False),
             ("review", "Qué revisar", 34, True),
             ("date", "Convertido", 12, False),
@@ -153,12 +154,13 @@ class LibraryView(ttk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         self.tree.bind("<Double-1>", lambda _e: self._open_selected())
         self.tree.bind("<Return>", lambda _e: self._open_selected())
+        self.tree.bind("<Delete>", lambda _e: self._with_selected(self.actions.forget))
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self._selection_changed())
         self.tree.bind("<Button-3>", self._context_menu)
 
         actions = ttk.Frame(self.list_area)
         actions.grid(row=2, column=0, sticky="ew", pady=(12, 0))
-        actions.columnconfigure(3, weight=1)
+        actions.columnconfigure(4, weight=1)
         self.open_button = ttk.Button(actions, text="Abrir", style="Primary.TButton",
                                       command=self._open_selected)  # fmt: skip
         self.open_button.grid(row=0, column=0, padx=(0, 8))
@@ -170,11 +172,16 @@ class LibraryView(ttk.Frame):
         self.retry_button = ttk.Button(
             actions, text="Reintentar", command=lambda: self._with_selected(self.actions.retry)
         )
-        self.retry_button.grid(row=0, column=2)
+        self.retry_button.grid(row=0, column=2, padx=(0, 8))
+        self.forget_button = ttk.Button(
+            actions, text="Quitar de la biblioteca…",
+            command=lambda: self._with_selected(self.actions.forget),
+        )  # fmt: skip
+        self.forget_button.grid(row=0, column=3)
         ttk.Label(
             actions, text="Suelta archivos o carpetas en cualquier parte de la ventana "
             "para añadirlos.", style="Muted.TLabel",
-        ).grid(row=0, column=3, sticky="e")  # fmt: skip
+        ).grid(row=0, column=4, sticky="e")  # fmt: skip
         self.context = tk.Menu(self, tearoff=False, font=self.fonts(10))
 
     def _empty_area(self) -> None:
@@ -297,7 +304,7 @@ class LibraryView(ttk.Frame):
             mark = "●  " if entry.state in ("to_review", "failed") else "   "
             item = self.tree.insert(
                 "", "end", text="  " + (entry.title or Path(entry.source).stem),
-                values=(_KINDS.get(Path(entry.source).suffix.lower(), "—"), mark + label,
+                values=(_kind(entry), mark + label,
                         what_to_review(entry), short_date(entry.finished_at)),
                 tags=(entry.state,),
             )  # fmt: skip
@@ -339,10 +346,15 @@ class LibraryView(ttk.Frame):
         entry = self.selected()
         state = entry.state if entry else None
         self.open_button.configure(text="Revisar" if state == "to_review" else "Abrir")
-        for button, enabled in ((self.open_button, state not in (None, "failed", "converting")),
-                                (self.folder_button, bool(entry and entry.output)),
-                                (self.retry_button, state == "failed")):  # fmt: skip
-            button.state(["!disabled"] if enabled else ["disabled"])
+        enabled = {
+            self.open_button: state not in (None, "failed", "converting"),
+            self.folder_button: bool(entry and entry.output),
+            self.retry_button: state == "failed",
+            # Not while it converts: the batch is writing its record.
+            self.forget_button: state not in (None, "converting"),
+        }
+        for button, on in enabled.items():
+            button.state(["!disabled"] if on else ["disabled"])
 
     def _open_selected(self) -> None:
         entry = self.selected()
@@ -370,7 +382,18 @@ class LibraryView(ttk.Frame):
             )
         if entry.state == "failed":
             self.context.add_command(label="Reintentar", command=lambda: self.actions.retry(entry))
+        if entry.state != "converting":
+            self.context.add_separator()
+            self.context.add_command(
+                label="Quitar de la biblioteca…", command=lambda: self.actions.forget(entry)
+            )
         self.context.tk_popup(event.x_root, event.y_root)
+
+
+def _kind(entry: LibraryEntry) -> str:
+    """The source type, and for a book split by chapters how many files it has."""
+    kind = _KINDS.get(Path(entry.source).suffix.lower(), "—")
+    return f"{kind} · {entry.parts - 1} partes" if entry.parts > 1 else kind
 
 
 def _short_path(path: Path, limit: int = 70) -> str:

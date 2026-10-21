@@ -7,7 +7,7 @@ can be reviewed without converting it again; its IR, for the text preview, is re
 in the background (conversion is deterministic, so it is the same).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from tomd.ir import (
@@ -48,18 +48,75 @@ class Review:
     markdown_path: Path
     markdown: str
     findings: list[Finding]
-    anchors: list[Anchor]
+    anchors: list[Anchor]  # of the file shown (the current part of a book)
     document: Document | None = None  # filled in when the background read finishes
+    # A book split by chapters (ADR-018): its files (name, title), index first; the one
+    # shown; each file's anchors; and each file's IR once the background read is split.
+    parts: list[tuple[str, str | None]] = field(default_factory=list)
+    part: int = 0
+    part_anchors: dict[int, list[Anchor]] = field(default_factory=dict)
+    part_documents: list[Document] | None = None
 
     @classmethod
     def load(cls, manifest: Manifest, version: str, entry: LibraryEntry, out_dir: Path) -> "Review":
         path = out_dir / (entry.output or "")
+        findings = manifest.findings(entry.sha256, version)
+        parts = manifest.parts(entry.sha256, version)
+        if parts:
+            part_anchors = {
+                i: [
+                    Anchor(p, line, bbox)
+                    for p, line, bbox in manifest.anchors(entry.sha256, version, i)
+                ]
+                for i in range(len(parts))
+            }
+            review = cls(entry, path, "", findings, [], parts=parts, part_anchors=part_anchors)
+            review.show_part(1 if len(parts) > 1 else 0)
+            return review
         markdown = path.read_text(encoding="utf-8") if entry.output and path.is_file() else ""
         anchors = [
             Anchor(p, line, bbox) for p, line, bbox in manifest.anchors(entry.sha256, version)
         ]
-        findings = manifest.findings(entry.sha256, version)
         return cls(entry, path, markdown, findings, anchors)
+
+    @property
+    def is_book(self) -> bool:
+        return bool(self.parts)
+
+    def show_part(self, part: int) -> None:
+        """Make file `part` of the book the one shown (its Markdown and anchors)."""
+        # Every file of the book sits next to the one shown (index.md at first).
+        path = self.markdown_path.parent / self.parts[part][0]
+        self.part = part
+        self.markdown_path = path
+        self.markdown = path.read_text(encoding="utf-8") if path.is_file() else ""
+        self.anchors = self.part_anchors.get(part, [])
+
+    def part_label(self, part: int) -> str:
+        name, title = self.parts[part]
+        return "Índice del libro" if part == 0 else (title or name)
+
+    def part_for_page(self, page: int) -> int | None:
+        """The chapter file holding `page`: the last one starting at or before it."""
+        starts = sorted(
+            (min(a.page for a in anchors), part)
+            for part, anchors in self.part_anchors.items()
+            if anchors and part > 0
+        )
+        found = None
+        for first, part in starts:
+            if first > page:
+                break
+            found = part
+        return found
+
+    def part_document(self) -> Document | None:
+        """The IR of the file shown, once the background read is split like the book."""
+        if not self.is_book:
+            return self.document
+        if self.part_documents is None or self.part == 0:
+            return None
+        return self.part_documents[self.part - 1]
 
     @property
     def title(self) -> str:
@@ -99,6 +156,20 @@ class Review:
                 break
             found = anchor
         return found
+
+
+def split_like(document: Document, parts: list[tuple[str, str | None]]) -> list[Document] | None:
+    """The chapters of `document` (the IR read again) cut as the book on disk was: the
+    split is deterministic, so chapters 1 or 2 levels deep give the same titles as the
+    stored parts. None when neither does (the book was converted with other options)."""
+    from tomd.transforms.split import split_document
+
+    wanted = [title for _, title in parts[1:]]
+    for level in (1, 2):
+        book, _ = split_document(document, mode="chapters", level=level)
+        if book is not None and [c.document.meta.title for c in book.chapters] == wanted:
+            return [c.document for c in book.chapters]
+    return None
 
 
 def what_to_review(entry: LibraryEntry) -> str:

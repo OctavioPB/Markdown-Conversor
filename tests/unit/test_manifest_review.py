@@ -90,3 +90,36 @@ def test_batch_stores_findings_and_anchors(tmp_path: Path) -> None:
     pages = [page for page, _, _ in manifest.anchors(pdf.sha256, __version__)]
     assert set(pages) == {1, 2} and pages == sorted(pages)
     manifest.close()
+
+
+def test_forget_removes_documents_but_keeps_file_names(tmp_path: Path) -> None:
+    manifest = Manifest(tmp_path / MANIFEST_NAME)
+    _converted(manifest, "aaa")
+    _converted(manifest, "bbb")
+    manifest.claim_slug("report", "aaa")
+    manifest.forget(["aaa"])
+    assert [e.sha256 for e in manifest.library(VERSION)] == ["bbb"]
+    assert manifest.findings("aaa", VERSION) == [] and manifest.anchors("aaa", VERSION) == []
+    # The name stays claimed: converting it again writes the same file, and no other
+    # document can take a name whose .md may still be on disk.
+    assert manifest.claim_slug("report", "zzz") != "report"
+    manifest.forget_all()
+    assert manifest.library(VERSION) == []
+    manifest.close()
+
+
+def test_forgotten_document_converts_again(tmp_path: Path) -> None:
+    from tomd import __version__
+
+    out = tmp_path / "out"
+    run_batch([TWO_PAGES], BatchOptions(out_dir=out, ocr="never"))
+    manifest = Manifest(out / MANIFEST_NAME)
+    (entry,) = manifest.library(__version__)
+    manifest.forget([entry.sha256])
+    manifest.close()
+    summary = run_batch([TWO_PAGES], BatchOptions(out_dir=out, ocr="never"))
+    assert summary.planned == 1
+    manifest = Manifest(out / MANIFEST_NAME)
+    (again,) = manifest.library(__version__)
+    assert again.output == entry.output  # same file name as before
+    manifest.close()

@@ -58,6 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["auto", "always", "never"],
         help="OCR scanned PDF pages (ADR-017): auto = only pages without usable text",
     )
+    _split_arguments(convert)
 
     batch = sub.add_parser(
         "batch", help="convert many files, resumable, with a SQLite manifest (ADR-008)"
@@ -81,6 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument(
         "--force", action="store_true", help="convert everything again, even if done"
     )
+    batch.add_argument(
+        "--timeout-per-page",
+        type=float,
+        default=3.0,
+        help="extra seconds allowed per PDF page, for long books (default 3)",
+    )
+    _split_arguments(batch)
 
     ui = sub.add_parser("ui", help="desktop window to convert and review documents")
     ui.add_argument("source", nargs="?", help="document to put in the source field")
@@ -98,11 +106,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _split_arguments(parser: argparse.ArgumentParser) -> None:
+    from tomd.transforms.split import SPLIT_MODES
+
+    parser.add_argument(
+        "--split",
+        default="auto",
+        choices=SPLIT_MODES,
+        help="books by chapters, one folder per book (ADR-018): auto = long books with "
+        "reliable chapters; chapters = always try; none = one file",
+    )
+    parser.add_argument(
+        "--split-level",
+        type=int,
+        default=1,
+        choices=[1, 2],
+        help="1 = chapters (default), 2 = sections",
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "convert":
-        return _convert(args.source, args.out, args.revision, args.backend, args.ocr)
+        return _convert(
+            args.source, args.out, args.revision, args.backend, args.ocr,
+            args.split, args.split_level,
+        )  # fmt: skip
     if args.command == "batch":
         return _batch(args)
     if args.command == "ui":
@@ -115,12 +145,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     return EXIT_OK
 
 
-def _convert(source: str, out: Path, revision: int | None, backend: str, ocr: str) -> int:
+def _convert(
+    source: str,
+    out: Path,
+    revision: int | None,
+    backend: str,
+    ocr: str,
+    split: str = "auto",
+    split_level: int = 1,
+) -> int:
     from tomd.pipeline.dispatch import convert
     from tomd.readers.pdf.ocr import OcrMode
 
     try:
-        result = convert(source, out, revision=revision, pdf_backend=backend, ocr=OcrMode(ocr))
+        result = convert(
+            source, out, revision=revision, pdf_backend=backend, ocr=OcrMode(ocr),
+            split=split, split_level=split_level,
+        )  # fmt: skip
     except TomdError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exit_code(exc)
@@ -156,6 +197,9 @@ def _batch(args: argparse.Namespace) -> int:
         ocr=args.ocr,
         retry_failed=args.retry_failed,
         force=args.force,
+        timeout_per_page_s=args.timeout_per_page,
+        split=args.split,
+        split_level=args.split_level,
     )
     summary = run_batch(args.inputs, options)
     if summary.report is not None:

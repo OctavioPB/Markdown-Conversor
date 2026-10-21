@@ -77,7 +77,18 @@ class Document:
     blocks: tuple[Block, ...]
     assets: tuple[Asset, ...]        # bytes + hash + tipo MIME
     diagnostics: tuple[Diagnostic, ...]
+    outline: tuple[OutlineEntry, ...]  # índice de la propia fuente (ADR-018)
+
+@dataclass(frozen=True)
+class OutlineEntry:                  # marcador del PDF o entrada del índice del EPUB
+    title: str
+    level: int                       # 1 = primer nivel
+    page: int | None = None          # PDF
+    target: str | None = None        # EPUB: "ruta.xhtml#fragmento"
 ```
+
+El `outline` es información de la fuente, no de presentación: el Writer no lo imprime.
+Sirve para dividir un libro por capítulos (ADR-018).
 
 Decisiones de diseño de la IR:
 
@@ -127,6 +138,10 @@ registro de *handlers* por selector, sin bifurcar el mapeo base.
 - El manifiesto SQLite (ADR-008) es la única fuente de verdad del estado del lote: clave
   (sha256, versión), estado, salida, error, duración, memoria pico, diagnósticos por código.
   Lo que quedó `running` tras una interrupción vuelve a `pending` al reanudar.
+- Un libro dividido por capítulos (ADR-018) es una sola entrada del manifiesto: `output`
+  apunta a `<carpeta>/index.md`, la tabla `parts` lista sus archivos en orden y los
+  anclajes de cada archivo llevan su número de parte. El worker informa de las páginas de
+  un PDF al empezar, y el padre amplía su plazo (`--timeout-per-page`).
 
 ## 7. Disposición de la salida
 
@@ -137,6 +152,20 @@ out/
   manifest.sqlite
   report.md            # resumen del lote: estados, diagnósticos más frecuentes, lentos
 ```
+
+Un libro dividido por capítulos (ADR-018, reglas M23–M26) es una carpeta en lugar de un
+archivo:
+
+```
+out/
+  <slug-del-libro>/
+    index.md           # título, autoría y enlaces a los capítulos
+    01-<capítulo>.md   # un documento completo por capítulo
+    assets/<sha256-12>.png
+```
+
+El corte es una función pura (`transforms.split`) que se aplica tras los transforms; la
+escritura de la carpeta vive en `pipeline.book`.
 
 El `<slug>` deriva del título normalizado. Si otro documento del lote ya tiene ese nombre,
 se añade el prefijo de su hash (`<slug>-<sha8>`); el manifiesto lo registra, así que el
