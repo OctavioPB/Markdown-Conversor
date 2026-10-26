@@ -449,3 +449,22 @@ def test_starting_from_scratch_forgets_everything(
     assert not any(p.exists() for p in outputs) and not (out / "report.md").exists()
     assert mine.is_file()  # not tomd's: never touched
     app.close()
+
+
+def test_the_rag_option_is_remembered_and_sent_to_the_batch(
+    tmp_path: Path, tk_root: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tomd.ui.app import TomdApp
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"rag": True}))
+    app = TomdApp(tk_root, tmp_path / "out", settings)
+    assert app.rag is True
+    sent: list[Any] = []
+    monkeypatch.setattr(app, "start_batch", lambda sources, options, **_k: sent.append(options))
+    app.add([str(TWO_PAGES)])
+    assert sent[0].rag is True
+    app.rag = False
+    app._save_settings()
+    assert json.loads(settings.read_text())["rag"] is False
+    app.close()

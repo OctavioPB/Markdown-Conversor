@@ -82,6 +82,7 @@ class TomdApp:
         saved = settings.get("out_dir")
         self.out_dir = out_dir or (Path(saved) if isinstance(saved, str) else default_out_dir())
         self.ocr = str(settings.get("ocr") or "auto")
+        self.rag = settings.get("rag") is True
         split = str(settings.get("split") or "auto")
         self.split = split if split in {value for value, _, _ in _SPLIT_CHOICES} else "auto"
         backend = str(settings.get("backend") or DEFAULT_BACKEND)
@@ -288,7 +289,7 @@ class TomdApp:
         ):
             return
         options = BatchOptionsUI(str(self.out_dir), ocr="always", backend=self.backend,
-                                 force=True, split=self.split)  # fmt: skip
+                                 force=True, split=self.split, rag=self.rag)  # fmt: skip
         self.start_batch([review.entry.source], options, open_after=True)
 
     # --- Adding documents ------------------------------------------------------------
@@ -329,7 +330,7 @@ class TomdApp:
             sources = usable
         single = len(sources) == 1 and (articles or Path(sources[0]).is_file())
         options = BatchOptionsUI(str(self.out_dir), ocr=self.ocr, backend=self.backend,
-                                 split=self.split)  # fmt: skip
+                                 split=self.split, rag=self.rag)  # fmt: skip
         self.start_batch(sources, options, open_after=single)
 
     def retry(self, entries: list[LibraryEntry]) -> None:
@@ -337,7 +338,7 @@ class TomdApp:
         if not entries:
             return
         options = BatchOptionsUI(str(self.out_dir), ocr=self.ocr, backend=self.backend,
-                                 retry_failed=True, split=self.split)  # fmt: skip
+                                 retry_failed=True, split=self.split, rag=self.rag)  # fmt: skip
         self.start_batch([e.source for e in entries], options, open_after=False)
 
     # --- Removing documents ----------------------------------------------------------
@@ -586,7 +587,7 @@ class TomdApp:
 
     def show_options(self) -> None:
         dialog = OptionsDialog(
-            self.root, self.fonts, self.ocr, self.backend, self.out_dir, self.split
+            self.root, self.fonts, self.ocr, self.backend, self.out_dir, self.split, self.rag
         )
         self.root.wait_window(dialog)
         if dialog.clear_requested:
@@ -597,8 +598,8 @@ class TomdApp:
             return
         if dialog.result is None:
             return
-        ocr, backend, out_dir, split = dialog.result
-        self.ocr, self.backend, self.split = ocr, backend, split
+        ocr, backend, out_dir, split, rag = dialog.result
+        self.ocr, self.backend, self.split, self.rag = ocr, backend, split, rag
         if out_dir != self.out_dir:
             if self.batch is not None:
                 messagebox.showinfo(
@@ -640,7 +641,7 @@ class TomdApp:
             return
         data = {
             "out_dir": str(self.out_dir), "ocr": self.ocr, "backend": self.backend,
-            "split": self.split,
+            "split": self.split, "rag": self.rag,
         }  # fmt: skip
         with contextlib.suppress(OSError):
             self.settings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -663,78 +664,83 @@ class OptionsDialog(tk.Toplevel):
     """OCR, the results folder and, under «Avanzado», the PDF engine."""
 
     def __init__(self, parent: tk.Misc, fonts: theme.Fonts, ocr: str, backend: str,
-                 out_dir: Path, split: str = "auto") -> None:  # fmt: skip
+                 out_dir: Path, split: str = "auto", rag: bool = False) -> None:  # fmt: skip
         super().__init__(parent)
         self.title("Opciones")
         self.configure(background=PALETTE.surface)
         self.transient(parent.winfo_toplevel())
         self.resizable(False, False)
-        self.result: tuple[str, str, Path, str] | None = None
+        self.result: tuple[str, str, Path, str, bool] | None = None
         self.clear_requested = False
         self.reset_requested = False
         self.ocr = tk.StringVar(value=ocr)
         self.backend = tk.StringVar(value=backend)
         self.out_dir = tk.StringVar(value=str(out_dir))
         self.split = tk.StringVar(value=split)
+        self.rag = tk.BooleanVar(value=rag)
         body = ttk.Frame(self, style="Surface.TFrame", padding=24)
         body.pack(fill="both", expand=True)
         ttk.Label(body, text="Opciones", style="Surface.Title.TLabel").pack(anchor="w")
 
-        ttk.Label(body, text="Leer páginas escaneadas (OCR)", style="Surface.Strong.TLabel").pack(
-            anchor="w", pady=(18, 6)
-        )
-        for value, label, help_text in _OCR_CHOICES:
-            ttk.Radiobutton(body, text=label, value=value, variable=self.ocr).pack(anchor="w")
-            ttk.Label(body, text=help_text, style="Surface.Muted.TLabel").pack(
-                anchor="w", padx=(26, 0), pady=(0, 6)
+        # Two columns, so the dialog fits a laptop screen: how documents are converted on
+        # the left, where they go and the library on the right.
+        columns = ttk.Frame(body, style="Surface.TFrame")
+        columns.pack(fill="both", expand=True)
+        left = ttk.Frame(columns, style="Surface.TFrame")
+        left.grid(row=0, column=0, sticky="nw", padx=(0, 32))
+        right = ttk.Frame(columns, style="Surface.TFrame")
+        right.grid(row=0, column=1, sticky="nw")
+        wrap = _text_width(52)
+
+        def heading(parent: ttk.Frame, text: str, first: bool = False) -> None:
+            ttk.Label(parent, text=text, style="Surface.Strong.TLabel").pack(
+                anchor="w", pady=(18 if first else 14, 6)
             )
 
-        ttk.Label(body, text="Dividir libros por capítulos", style="Surface.Strong.TLabel").pack(
-            anchor="w", pady=(14, 6)
-        )
-        for value, label, help_text in _SPLIT_CHOICES:
-            ttk.Radiobutton(body, text=label, value=value, variable=self.split).pack(anchor="w")
+        def note(parent: ttk.Frame, text: str, indent: bool = True) -> None:
             ttk.Label(
-                body, text=help_text, style="Surface.Muted.TLabel",
-                wraplength=_text_width(62), justify="left",
-            ).pack(anchor="w", padx=(26, 0), pady=(0, 6))  # fmt: skip
-        ttk.Label(body, text="Afecta a lo que conviertas a partir de ahora.",
-                  style="Surface.Muted.TLabel").pack(anchor="w")  # fmt: skip
+                parent, text=text, style="Surface.Muted.TLabel", wraplength=wrap, justify="left"
+            ).pack(anchor="w", padx=(26 if indent else 0, 0), pady=(0, 6))
 
-        ttk.Label(body, text="Carpeta de resultados", style="Surface.Strong.TLabel").pack(
-            anchor="w", pady=(14, 6)
-        )
-        row = ttk.Frame(body, style="Surface.TFrame")
-        row.pack(fill="x")
-        ttk.Label(row, textvariable=self.out_dir, style="Surface.TLabel").pack(side="left")
-        ttk.Button(row, text="Cambiar…", command=self._choose).pack(side="right", padx=(12, 0))
-        ttk.Label(body, text="Cada carpeta tiene su propia biblioteca.",
-                  style="Surface.Muted.TLabel").pack(anchor="w", pady=(4, 0))  # fmt: skip
+        heading(left, "Leer páginas escaneadas (OCR)", first=True)
+        for value, label, help_text in _OCR_CHOICES:
+            ttk.Radiobutton(left, text=label, value=value, variable=self.ocr).pack(anchor="w")
+            note(left, help_text)
+        heading(left, "Dividir libros por capítulos")
+        for value, label, help_text in _SPLIT_CHOICES:
+            ttk.Radiobutton(left, text=label, value=value, variable=self.split).pack(anchor="w")
+            note(left, help_text)
+        heading(right, "Carpeta de resultados", first=True)
+        ttk.Label(right, textvariable=self.out_dir, style="Surface.TLabel", wraplength=wrap,
+                  justify="left").pack(anchor="w")  # fmt: skip
+        ttk.Button(right, text="Cambiar…", command=self._choose).pack(anchor="w", pady=(6, 4))
+        note(right, "Cada carpeta tiene su propia biblioteca.", indent=False)
 
-        ttk.Label(body, text="Biblioteca", style="Surface.Strong.TLabel").pack(
-            anchor="w", pady=(14, 6)
+        heading(right, "Biblioteca")
+        note(right, "Quita todos los documentos de la lista de esta carpeta.", indent=False)
+        ttk.Button(right, text="Vaciar la biblioteca…", command=self._clear).pack(
+            anchor="w", pady=(0, 10)
         )
-        row = ttk.Frame(body, style="Surface.TFrame")
-        row.pack(fill="x")
-        ttk.Label(row, text="Quita todos los documentos de la lista de esta carpeta.",
-                  style="Surface.Muted.TLabel").pack(side="left")  # fmt: skip
-        ttk.Button(row, text="Vaciar la biblioteca…", command=self._clear).pack(
-            side="right", padx=(12, 0)
+        note(right, "Olvida todo lo convertido aquí, para convertirlo de nuevo.", indent=False)
+        ttk.Button(right, text="Empezar de cero…", command=self._reset).pack(anchor="w")
+
+        heading(right, "Para RAG")
+        ttk.Checkbutton(
+            left, text="Quitar lo que no es contenido del libro", variable=self.rag
+        ).pack(anchor="w")
+        note(
+            right,
+            "Cubierta, copyright, «sobre el autor», agradecimientos, índices, bibliografía, "
+            "listas de figuras, contracubierta… Se conservan el prefacio, los apéndices y el "
+            "glosario. Cada sección quitada queda anotada en la revisión.",
         )
-        row = ttk.Frame(body, style="Surface.TFrame")
-        row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text="Olvida todo lo convertido aquí, para convertirlo de nuevo.",
-                  style="Surface.Muted.TLabel").pack(side="left")  # fmt: skip
-        ttk.Button(row, text="Empezar de cero…", command=self._reset).pack(
-            side="right", padx=(12, 0)
-        )
+        note(right, "La división y el modo RAG afectan a lo que conviertas a partir de ahora.",
+             indent=False)  # fmt: skip
 
         backends = available_backends()
         if len(backends) > 1:
-            ttk.Label(body, text="Avanzado · motor para PDF", style="Surface.Strong.TLabel").pack(
-                anchor="w", pady=(14, 6)
-            )
-            ttk.Combobox(body, textvariable=self.backend, values=backends, state="readonly",
+            heading(right, "Avanzado · motor para PDF")
+            ttk.Combobox(right, textvariable=self.backend, values=backends, state="readonly",
                          width=16).pack(anchor="w")  # fmt: skip
 
         buttons = ttk.Frame(body, style="Surface.TFrame")
@@ -755,7 +761,8 @@ class OptionsDialog(tk.Toplevel):
 
     def _save(self) -> None:
         self.result = (
-            self.ocr.get(), self.backend.get(), Path(self.out_dir.get()), self.split.get()
+            self.ocr.get(), self.backend.get(), Path(self.out_dir.get()), self.split.get(),
+            self.rag.get(),
         )  # fmt: skip
         self.destroy()
 

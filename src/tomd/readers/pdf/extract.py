@@ -56,6 +56,9 @@ _OUTLINE_MAX_DEPTH = 6
 _MIN_MATRIX_SCALE = 0.01
 _MAX_MATRIX_SCALE = 1000.0
 _OUTLINE_MAX_ENTRIES = 5000
+# A language tag is a few characters ("es-ES"); a longer /Lang is damaged.
+_MAX_LANGUAGE_BYTES = 256
+_LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,16 +143,26 @@ def read_outline(doc: pdfium.PdfDocument) -> tuple[OutlineEntry, ...]:
 
 
 def _catalog_language(doc: pdfium.PdfDocument) -> str | None:
+    """The catalog's /Lang (UTF-16LE, length in bytes with its terminator). Optional
+    metadata: whatever goes wrong reading it leaves the language unknown, never fails the
+    conversion."""
     getter = getattr(pdfium_c, "FPDFCatalog_GetLanguage", None)
     if getter is None:
         return None
-    size = getter(doc.raw, None, 0)
-    if size <= 2:
+    try:
+        size = int(getter(doc.raw, None, 0))
+        if size <= 2 or size > _MAX_LANGUAGE_BYTES:
+            return None
+        # FPDF_WCHAR*: a buffer of 16-bit units, not bytes (a char buffer is refused).
+        buffer = (ctypes.c_ushort * (size // 2))()
+        getter(doc.raw, buffer, size)
+        data = bytes(memoryview(buffer).cast("B"))[: size - 2]
+    except (ctypes.ArgumentError, OSError, ValueError):
         return None
-    buffer = ctypes.create_string_buffer(size)
-    getter(doc.raw, buffer, size)
-    value = buffer.raw[: size - 2].decode("utf-16-le", errors="ignore").strip()
-    return value or None
+    value = data.decode("utf-16-le", errors="ignore").strip()
+    # Only a language tag ("es", "en-US"): some files carry junk there ("ó>"), and the
+    # front matter's `language` is used to filter documents.
+    return value if _LANGUAGE_TAG.fullmatch(value) else None
 
 
 @dataclass(frozen=True, slots=True)

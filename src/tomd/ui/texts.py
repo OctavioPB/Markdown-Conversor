@@ -95,6 +95,7 @@ AUTOMATIC: dict[str, str] = {
     codes.PDF_ROTATED_TEXT_DROPPED: "Se quitó texto girado de los márgenes",
     codes.PDF_FURNITURE_REMOVED: "Se quitaron encabezados, pies y números de página repetidos",
     codes.PDF_FOOTNOTE_UNMATCHED: "Un texto con aspecto de nota se dejó en su sitio",
+    codes.DOC_SECTION_DROPPED: "Se omitió una sección que no es contenido (modo RAG)",
     codes.DOC_SPLIT_SKIPPED: "No se dividió por capítulos: no se encontraron capítulos fiables",
 }
 

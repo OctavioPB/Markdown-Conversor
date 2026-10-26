@@ -222,6 +222,7 @@ def convert(
     ocr: OcrMode = OcrMode.AUTO,
     split: str = "auto",
     split_level: int = 1,
+    rag: bool = False,
 ) -> ConversionResult:
     """Convert one source. A book may be split by chapters (ADR-018): then the result is
     the book's folder and `markdown_path` its `index.md`."""
@@ -230,6 +231,10 @@ def convert(
 
     doc = read_source(source, revision=revision, pdf_backend=pdf_backend, ocr=ocr)
     slug, doc = prepare_document(doc)
+    if rag:  # ADR-019: before splitting, so a book's left-out parts make no files
+        from tomd.transforms.rag import drop_non_content
+
+        doc = drop_non_content(doc)
     book, doc = split_document(doc, mode=split, level=split_level)
     if book is not None:
         rendered = render_book(book)

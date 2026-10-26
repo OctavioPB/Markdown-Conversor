@@ -327,3 +327,40 @@ leerse «por archivo». Cambiar `--split` o `--split-level` no reconvierte un li
 La división no reduce la memoria: el libro entero sigue en la IR antes de dividirse, así que
 hay que medir el pico con un libro de ~500 páginas frente al límite de 4 GB, y el timeout
 por documento del lote debe crecer con el número de páginas.
+
+## ADR-019 — Modo «Para RAG»: quitar las secciones que no son contenido del libro
+**Estado:** Aceptada (2026-10-26; opciones elegidas por el usuario)
+**Contexto:** La biblioteca alimenta un sistema de IA local. Las secciones que no son
+contenido (cubierta, copyright, «sobre el autor», agradecimientos, índices, bibliografía,
+contracubierta…) ensucian la búsqueda: aparecen en resultados por sus palabras sin aportar
+conocimiento. El usuario pide poder quitarlas, conservando el `index.md` que tomd genera
+para un libro dividido (ADR-018).
+**Decisión:**
+- Opción `--rag` (y «Para RAG» en la app), **desactivada por defecto**: sin ella la salida
+  no cambia.
+- Un transform puro, `drop_non_content`, aplicado tras los transforms por defecto y antes
+  de dividir el libro. Quita, por su título (es y en): cubierta y contracubierta,
+  portadilla y página de título, copyright y página legal, dedicatoria, índice de
+  contenidos (también «Contents at a Glance») e índice alfabético, «sobre el autor/los
+  editores/colaboradores/revisores», agradecimientos, bibliografía y referencias (también
+  «Further Reading» al final de un capítulo), listas de figuras y tablas, elogios y
+  anuncios («Praise for», «Also by»), colofón y licencias del distribuidor (EULA). Se
+  conservan prefacio, introducción, apéndices, glosario y notas.
+- Una sección es el título y todo lo que sigue hasta otro título de su nivel o superior.
+  Las entradas del índice del PDF con esos títulos quitan además sus páginas (lo que no
+  tiene título propio, como el texto de una página de copyright).
+- Toda sección quitada emite `doc.section_dropped` (info) con su título (ADR-006: ninguna
+  pérdida silenciosa). Las notas y las imágenes que solo estaban en lo quitado se van con
+  ello, sin avisos de notas huérfanas.
+**Alternativas consideradas:**
+- Quitarlas siempre: pierde información sin pedirlo y rompe la salida de quien quiere el
+  libro entero (por eso el usuario lo eligió desactivado).
+- Marcarlas en el front matter en lugar de quitarlas: el sistema de RAG tendría que
+  conocer y filtrar esa marca, y los archivos seguirían llevando el ruido.
+- Detectarlas por posición (todo lo anterior al capítulo 1): también quitaría el prefacio
+  y la introducción, que el usuario quiere conservar.
+**Consecuencias:** La detección por título es por idioma y por costumbre editorial: una
+sección con un título inusual no se quita, y una con un título de la lista pero contenido
+útil sí (queda anotada en los avisos). Activar o desactivar `--rag` no reconvierte lo ya
+convertido (la clave es sha256 + versión, como con `--split`): hace falta `--force` o
+«Empezar de cero».

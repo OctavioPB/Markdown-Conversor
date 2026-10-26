@@ -51,6 +51,7 @@ class BatchOptions:
     timeout_per_page_s: float = 3.0
     split: str = "auto"  # books by chapters (ADR-018)
     split_level: int = 1
+    rag: bool = False  # leave out what is not content (ADR-019)
 
 
 @dataclass
@@ -121,7 +122,13 @@ def hash_inputs(files: list[Path], manifest: Manifest) -> list[tuple[str, str]]:
 
 
 def _worker_main(
-    conn: Connection, memory_mb: int, backend: str, ocr: str, split: str, split_level: int
+    conn: Connection,
+    memory_mb: int,
+    backend: str,
+    ocr: str,
+    split: str,
+    split_level: int,
+    rag: bool = False,
 ) -> None:
     """Convert documents sent by the parent until told to stop."""
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl+C is the parent's to handle
@@ -131,6 +138,7 @@ def _worker_main(
     from tomd.pipeline.dispatch import prepare_document, read_source
     from tomd.pipeline.limits import apply_memory_limit, peak_memory_mb
     from tomd.readers.pdf.ocr import OcrMode
+    from tomd.transforms.rag import drop_non_content
     from tomd.transforms.split import split_document
     from tomd.writers.markdown import render_markdown
 
@@ -150,6 +158,8 @@ def _worker_main(
                 conn.send(("pages", pages))  # the parent extends this document's deadline
             doc = read_source(source, pdf_backend=backend, ocr=OcrMode(ocr))
             slug, doc = prepare_document(doc)
+            if rag:
+                doc = drop_non_content(doc)
             book, doc = split_document(doc, mode=split, level=split_level)
             conn.send(("slug", slug))
             final = conn.recv()[1]
@@ -245,7 +255,7 @@ class _Pool:
         o = self.options
         process = self.context.Process(
             target=_worker_main,
-            args=(child, o.memory_mb, o.backend, o.ocr, o.split, o.split_level),
+            args=(child, o.memory_mb, o.backend, o.ocr, o.split, o.split_level, o.rag),
             daemon=True,
         )
         process.start()
@@ -457,7 +467,7 @@ def _options_record(options: BatchOptions) -> dict[str, object]:
         "memory_mb": options.memory_mb, "backend": options.backend, "ocr": options.ocr,
         "retry_failed": options.retry_failed, "force": options.force,
         "timeout_per_page_s": options.timeout_per_page_s, "split": options.split,
-        "split_level": options.split_level,
+        "split_level": options.split_level, "rag": options.rag,
         "version": __version__, "pid": os.getpid(),
     }  # fmt: skip
 

@@ -22,6 +22,7 @@ Severity = Literal["info", "warning", "error"]
 # Document and text
 DOC_TITLE_MISSING = "doc.title_missing"
 DOC_SPLIT_SKIPPED = "doc.split_skipped"
+DOC_SECTION_DROPPED = "doc.section_dropped"
 TEXT_INVALID_UNICODE = "text.invalid_unicode"
 HEADING_LEVEL_CLAMPED = "heading.level_clamped"
 # Tables, math, images, footnotes
@@ -89,6 +90,13 @@ CATALOG: dict[str, CodeInfo] = {
         "file is named after the source file.",
         "Set a title in the source (PDF document properties) or check that the first "
         "heading was recognised.",
+    ),
+    DOC_SECTION_DROPPED: CodeInfo(
+        "info",
+        "In RAG mode (ADR-019), a section that is not the book's content (cover, copyright, "
+        "about the author, acknowledgments, contents, index, bibliography...) was left out "
+        "on purpose.",
+        "",
     ),
     DOC_SPLIT_SKIPPED: CodeInfo(
         "info",

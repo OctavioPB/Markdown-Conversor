@@ -51,6 +51,7 @@ class BatchOptionsUI:
     force: bool = False  # convert again even if done (e.g. "Volver a convertir con OCR")
     retry_failed: bool = False
     split: str = "auto"  # books by chapters (ADR-018)
+    rag: bool = False  # leave out what is not content (ADR-019)
 
 
 def _batch_worker(sources: list[str], options: BatchOptionsUI, events: "mp.Queue[object]") -> None:
@@ -73,7 +74,7 @@ def _batch_worker(sources: list[str], options: BatchOptionsUI, events: "mp.Queue
             BatchOptions(
                 out_dir=Path(options.out_dir), ocr=options.ocr, backend=options.backend,
                 force=options.force, retry_failed=options.retry_failed,
-                split=options.split,
+                split=options.split, rag=options.rag,
             ),
             progress=lambda line: events.put(BatchLine(line)),
         )  # fmt: skip

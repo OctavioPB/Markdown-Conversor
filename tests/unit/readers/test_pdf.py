@@ -1027,3 +1027,19 @@ def test_a_title_set_flush_right_is_one_heading(tmp_path: Path) -> None:
     doc = convert(make_pdf(tmp_path, draw))
     headings = [b for b in doc.blocks if isinstance(b, Heading)]
     assert len(headings) == 1 and "Capability Model" in str(headings[0])
+
+
+def test_the_catalog_language_is_read(tmp_path: Path) -> None:
+    """Many publishers' PDFs declare /Lang; reading it once crashed every such book
+    (a byte buffer where PDFium wants UTF-16 units)."""
+    path = make_pdf(tmp_path, lambda c: _filler(c, TOP))
+    data = path.read_bytes()
+    old = b"/PageMode /UseNone"
+    assert old in data
+    # Same length: the cross-reference offsets stay valid.
+    path.write_bytes(data.replace(old, b"/Lang (es-ES)".ljust(len(old)), 1))
+    doc = convert(path)
+    assert doc.meta.language == "es-ES"
+    # Junk in /Lang (seen in a CRC Press book: two stray bytes) is no language.
+    path.write_bytes(data.replace(old, b"/Lang (\xf3>)".ljust(len(old)), 1))
+    assert convert(path).meta.language is None

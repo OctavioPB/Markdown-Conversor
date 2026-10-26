@@ -109,3 +109,42 @@ def test_a_schema_2_manifest_gains_parts(tmp_path: Path) -> None:
     assert manifest.anchors("s", "v") == [(3, 12, None)]  # old anchors are part 0
     assert manifest.parts("s", "v") == []
     manifest.close()
+
+
+def _book_with_extras(path: Path) -> Path:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen.canvas import Canvas
+
+    canvas = Canvas(str(path), pagesize=A4, invariant=1)
+    canvas.setTitle("Networks")
+    line = "Packets travel between hosts across links that join routers in a network."
+    for n, title in enumerate(("Chapter 1 Basics", "Chapter 2 Routing", "About the Author")):
+        canvas.setFont("Helvetica-Bold", 18)
+        canvas.drawString(72, A4[1] - 72, title)
+        canvas.bookmarkPage(f"p{n}")
+        canvas.addOutlineEntry(title, f"p{n}", level=0)
+        canvas.setFont("Helvetica", 10)
+        for i in range(20):
+            canvas.drawString(72, A4[1] - 112 - 14 * i, line)
+        canvas.showPage()
+    canvas.save()
+    return path
+
+
+def test_rag_mode_leaves_out_what_is_not_content(tmp_path: Path) -> None:
+    source = _book_with_extras(tmp_path / "networks.pdf")
+    plain = convert(str(source), tmp_path / "plain", ocr=OcrMode.NEVER, split="chapters")
+    assert "about-the-author" in " ".join(p.name for p in plain.markdown_path.parent.iterdir())
+    rag = convert(str(source), tmp_path / "rag", ocr=OcrMode.NEVER, split="chapters", rag=True)
+    names = sorted(p.name for p in rag.markdown_path.parent.glob("*.md"))
+    assert names == ["01-chapter-1-basics.md", "02-chapter-2-routing.md", INDEX_NAME]
+    codes = [d.code for d in rag.diagnostics]
+    assert "doc.section_dropped" in codes
+    # The batch and the command line carry the option to the worker.
+    out = tmp_path / "batch"
+    run_batch([source], BatchOptions(out_dir=out, ocr="never", split="chapters", rag=True),
+              progress=lambda line: None)  # fmt: skip
+    assert not list((out / "networks").glob("*about-the-author*"))
+    assert main(["convert", str(source), "-o", str(tmp_path / "cli"), "--ocr", "never",
+                 "--split", "chapters", "--rag"]) == 0  # fmt: skip
+    assert not list((tmp_path / "cli" / "networks").glob("*about-the-author*"))

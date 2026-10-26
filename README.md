@@ -47,8 +47,13 @@ Para usarla:
   un archivo por capítulo. En la biblioteca es una sola fila («PDF · 12 partes»); en la
   revisión eliges el capítulo arriba a la derecha, y al pasar de página en el original o
   pulsar un aviso se abre el capítulo que toca.
+- **Para RAG:** en Opciones, «Quitar lo que no es contenido del libro» deja fuera
+  cubierta, copyright, «sobre el autor/los editores», agradecimientos, índices,
+  bibliografía y referencias, listas de figuras, contracubierta y similares (se conservan
+  el prefacio, los apéndices y el glosario). Desactivado por defecto; cada sección quitada
+  queda anotada en «Ver cambios automáticos» de la revisión.
 - **Opciones:** cuándo leer páginas escaneadas (OCR), cuándo dividir los libros por
-  capítulos y la carpeta de resultados.
+  capítulos, el modo «Para RAG» y la carpeta de resultados.
 - **Los resultados** quedan en `Documentos\tomd` (hay un acceso en el menú Inicio:
   «Carpeta de resultados»). Cada documento es un archivo `.md`, más una carpeta con sus
   imágenes si las tiene.
@@ -116,6 +121,10 @@ uv run tomd convert escaneo.pdf --ocr always -o out/
 # Libros por capítulos (ver «Libros divididos por capítulos»): una carpeta por libro
 uv run tomd convert libro-tecnico.pdf -o out/ --split chapters
 
+# Para RAG: deja fuera lo que no es contenido (cubierta, copyright, sobre el autor,
+# agradecimientos, índices, bibliografía…), ADR-019
+uv run tomd convert libro-tecnico.pdf -o out/ --rag
+
 # Lote reanudable: carpetas, archivos o listas .txt de rutas (ver «Lotes»)
 uv run tomd batch biblioteca/ -o out/
 
@@ -142,8 +151,8 @@ uv run tomd batch biblioteca/ otra-carpeta/ lista.txt -o out/ --workers 1 --time
   páginas con OCR tenga tiempo). Un archivo dañado, que se cuelga o que agota la memoria
   queda registrado y el lote sigue. `--retry-failed` reintenta los fallidos y `--force`
   reconvierte todo.
-- **Libros:** `--split` y `--split-level` funcionan igual que en `convert`. Cambiarlos no
-  reconvierte lo ya hecho: usa `--force`.
+- **Libros:** `--split`, `--split-level` y `--rag` funcionan igual que en `convert`.
+  Cambiarlos no reconvierte lo ya hecho: usa `--force`.
 - **Informe:** `out/report.md` resume estados, diagnósticos más frecuentes, documentos más
   lentos y fallos.
 - **Workers:** `--workers 1` por defecto, porque la máquina se comparte con el modelo

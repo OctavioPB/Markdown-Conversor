@@ -123,6 +123,12 @@ def _split_arguments(parser: argparse.ArgumentParser) -> None:
         choices=[1, 2],
         help="1 = chapters (default), 2 = sections",
     )
+    parser.add_argument(
+        "--rag",
+        action="store_true",
+        help="leave out what is not the book's content: cover, copyright, about the "
+        "author, acknowledgments, contents, index, bibliography... (ADR-019)",
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -131,7 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "convert":
         return _convert(
             args.source, args.out, args.revision, args.backend, args.ocr,
-            args.split, args.split_level,
+            args.split, args.split_level, args.rag,
         )  # fmt: skip
     if args.command == "batch":
         return _batch(args)
@@ -153,6 +159,7 @@ def _convert(
     ocr: str,
     split: str = "auto",
     split_level: int = 1,
+    rag: bool = False,
 ) -> int:
     from tomd.pipeline.dispatch import convert
     from tomd.readers.pdf.ocr import OcrMode
@@ -160,7 +167,7 @@ def _convert(
     try:
         result = convert(
             source, out, revision=revision, pdf_backend=backend, ocr=OcrMode(ocr),
-            split=split, split_level=split_level,
+            split=split, split_level=split_level, rag=rag,
         )  # fmt: skip
     except TomdError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -200,6 +207,7 @@ def _batch(args: argparse.Namespace) -> int:
         timeout_per_page_s=args.timeout_per_page,
         split=args.split,
         split_level=args.split_level,
+        rag=args.rag,
     )
     summary = run_batch(args.inputs, options)
     if summary.report is not None:
