@@ -44,7 +44,7 @@ NON_CONTENT_TITLE = re.compile(
     | works\s+cited | further\s+reading | lecturas\s+(?:recomendadas|adicionales)
     | list\s+of\s+(?:figures|tables|illustrations) | lista\s+de\s+(?:figuras|tablas)
     | [ií]ndice\s+de\s+(?:figuras|tablas|ilustraciones)
-    | praise\s+for\b.* | also\s+by\b.* | other\s+books\s+by\b.* | del\s+mismo\s+autor
+    | (?:advance\s+)?praise\s+for\b.* | also\s+by\b.* | other\s+books\s+by\b.* | del\s+mismo\s+autor
     | advertisements? | publicidad | colophon | colof[oó]n
     | eula | end[-\s]user\s+licen[cs]e\s+agreement
     )\s*[.:]?\s*$""",

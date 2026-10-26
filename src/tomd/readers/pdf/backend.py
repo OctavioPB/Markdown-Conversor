@@ -43,6 +43,7 @@ from tomd.ir.diagnostics import (
     PDF_STRUCT_TREE_IGNORED,
     diagnose,
 )
+from tomd.ir.walk import plain_text
 from tomd.readers.pdf.blocks import document_stats, merge_across_pages, segment_blocks
 from tomd.readers.pdf.classify import (
     NUMBERED_HEADING,
@@ -79,6 +80,7 @@ from tomd.readers.pdf.tables import (
     find_grids,
     find_rule_tables,
 )
+from tomd.readers.pdf.title import choose_title
 
 # Tesseract languages, tried together (ADR-017); override with TOMD_OCR_LANG.
 DEFAULT_OCR_LANGUAGES = "spa+eng"
@@ -87,6 +89,11 @@ DEFAULT_OCR_LANGUAGES = "spa+eng"
 _MIN_TEXT_CHARS = 20
 # A guessed hyphen join lowers a paragraph's confidence to this (ADR-015).
 _GUESSED_HYPHEN_CONFIDENCE = 0.8
+# The title is looked for on the first pages (a half-title page, then the title page).
+_COVER_PAGES = 5
+# Lines of a cover title share its size within this many points, and are at most this many.
+_COVER_SIZE_TOLERANCE = 0.75
+_COVER_MAX_LINES = 4
 # Lists nest at most this deep; deeper items stay at the last level (Markdown readers and
 # people stop following nesting long before).
 _MAX_LIST_DEPTH = 8
@@ -426,11 +433,27 @@ class HeuristicBackend:
             inlines, _ = block_inlines(note.block)
             if inlines:
                 blocks.append(FootnoteDef(note.key, (Paragraph(tuple(inlines)),), note.provenance))
-        # The publisher's metadata title beats a title read by OCR: on a scanned cover the
-        # largest "text" is often the artwork read as letters ("AP").
+        # The title among three witnesses (title.py): the metadata, the cover's largest
+        # lines and the file name. Artwork read as letters on a scanned cover ("AP") never
+        # gets here: low-confidence OCR pages give no headings (classify_blocks), and
+        # what remains is checked for plausibility.
         plausible = bool(meta.title) and not _IMPLAUSIBLE_TITLE.match(meta.title or "")
-        if plausible and (not title or 1 in layout.ocr_pages):
-            title = meta.title
+        cover = _cover_title(layout.classified)
+        front = " ".join(c.block.text for c in layout.classified if c.block.page <= _COVER_PAGES)
+        chosen = choose_title(
+            meta.title if plausible else None, cover, path.stem, front,
+            cover_from_ocr=1 in layout.ocr_pages,
+        )  # fmt: skip
+        if chosen and title and _key(chosen) != _key(title):
+            # The page-1 heading that is not the title (a logo, one line of the title)
+            # stays as text, not as a second H1 that would push every heading down.
+            blocks = [
+                Paragraph(b.children, b.provenance)
+                if isinstance(b, Heading) and b.level == 1 and heading_text_of(b) == title
+                else b
+                for b in blocks
+            ]
+        title = chosen or title
         authors: tuple[str, ...] = ()
         if meta.author and meta.author.strip().lower() not in _IMPLAUSIBLE_AUTHOR:
             authors = (meta.author.strip(),)
@@ -507,6 +530,37 @@ def _build_blocks(
             )
     flush_list()
     return out, title, list(assets.values())
+
+
+def _cover_title(classified: list[Classified]) -> str | None:
+    """The cover's title: on the first page with headings among the first pages, the
+    lines set in its largest size that follow one another, joined ("Data Analysis" +
+    "with Open Source Tools"). It ends at the first other block: a formula or an author
+    line of the same size further down is not part of it."""
+    for page in range(1, _COVER_PAGES + 1):
+        on_page = [c for c in classified if c.block.page == page]
+        heads = [c for c in on_page if c.kind is Kind.HEADING]
+        if not heads:
+            continue
+        floor = max(c.block.size for c in heads) - _COVER_SIZE_TOLERANCE
+        lines: list[str] = []
+        for c in on_page:
+            if c.kind is Kind.HEADING and c.block.size >= floor:
+                lines.append(c.block.text)
+                if len(lines) == _COVER_MAX_LINES:
+                    break
+            elif lines:
+                break
+        return " ".join(" ".join(lines).split()) or None
+    return None
+
+
+def heading_text_of(block: Heading) -> str:
+    return " ".join(plain_text(block.children).split())
+
+
+def _key(text: str) -> str:
+    return re.sub(r"[\W_]+", "", text).casefold()
 
 
 def _list_block(items: list[Classified], source: str) -> ListBlock:

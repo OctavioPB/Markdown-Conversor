@@ -74,7 +74,11 @@ def prepare_document(doc: Document) -> tuple[str, Document]:
     suggests and the document ready to render."""
     doc = replace(doc, meta=replace(doc.meta, converter_version=__version__))
     doc = apply_default_transforms(doc)
-    return slugify(doc.meta.title or Path(doc.meta.source).stem or "document"), doc
+    from tomd.readers.pdf.title import main_title
+
+    # Named after the main title, without the subtitle: a book's folder or file name.
+    name = main_title(doc.meta.title) if doc.meta.title else Path(doc.meta.source).stem
+    return slugify(name or "document"), doc
 
 
 def render_document(doc: Document) -> tuple[str, RenderResult, Document]:
